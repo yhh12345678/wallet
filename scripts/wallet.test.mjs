@@ -1,7 +1,7 @@
 import './build.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allocate, centsFromText, suggestions, summarize } from '../public/model.js';
+import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../public/model.js';
 import { localDb } from './local-db.mjs';
 
 const worker = (await import('../dist/server/index.js')).default;
@@ -14,6 +14,36 @@ test('分摊尾差、指定金额、比例和份数均保持整数分总额', ()
   assert.deepEqual(allocate(101, 'percentage', [{ id: 'a', value: 8250 }, { id: 'b', value: 1750 }]).map(row => row.amount), [83, 18]);
   assert.deepEqual(allocate(9999999999, 'shares', [{ id: 'a', value: 1000000 }, { id: 'b', value: 1000000 }]).map(row => row.amount), [5000000000, 4999999999]);
   assert.throws(() => allocate(100, 'percentage', [{ id: 'a', value: 9999 }]), /100%/);
+});
+
+test('共享支出可省略分摊，编辑时可开启或关闭分摊', () => {
+  const ledger = blankLedger('周末旅行');
+  const members = [
+    { id: 'owner', active: true, role: 'owner' },
+    { id: 'guest', active: true, role: 'member' },
+  ];
+  const expense = {
+    kind: 'record', type: 'expense', title: '车费', date: '2026-11-17', amount: 1001, category: 'transport',
+    payments: [{ id: 'owner', amount: 900 }, { id: 'guest', amount: 101 }],
+  };
+  mutate(ledger, expense, members, 'owner');
+  const [record] = ledger.records;
+  assert.equal(record.method, 'none');
+  assert.deepEqual(record.splits, []);
+  assert.deepEqual(record.payments, expense.payments);
+  assert.deepEqual(Object.entries(balances(ledger.records)), []);
+  assert.equal(summarize(ledger, '2026-11').spending, 1001);
+
+  const edit = { ...expense, id: record.id };
+  assert.throws(() => mutate(ledger, { ...edit, method: 'equal', specifications: [] }, members, 'owner'), /至少选择一位/);
+  mutate(ledger, { ...edit, method: 'equal', specifications: [{ id: 'owner' }, { id: 'guest' }] }, members, 'owner');
+  assert.deepEqual(suggestions(ledger.records), [{ payer: 'guest', recipient: 'owner', amount: 400 }]);
+
+  mutate(ledger, { ...edit, method: 'none' }, members, 'owner');
+  assert.equal(ledger.records.length, 1);
+  assert.deepEqual(ledger.records[0].specifications, []);
+  assert.deepEqual(Object.entries(balances(ledger.records)), []);
+  assert.equal(summarize(ledger, '2026-11').spending, 1001);
 });
 
 test('邀请隔离、多人付款、还款、回收站与观察者权限', async () => {

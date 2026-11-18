@@ -114,6 +114,7 @@ export function balances(records) {
       add(record.recipient, -record.amount);
       continue;
     }
+    if (record.method === 'none') continue;
     for (const payment of record.payments) add(payment.id, payment.amount);
     for (const split of record.splits) add(split.id, -split.amount);
   }
@@ -204,12 +205,16 @@ export function mutate(state, action, members, actor, now = Date.now()) {
     ensure(action.payments.every(item => item && (active.has(item.id) || previousPayees.has(item.id)) && amountValid(item.amount)), '请输入有效的付款人和实付金额。');
     ensure(new Set(action.payments.map(item => item.id)).size === action.payments.length, '付款成员重复。');
     ensure(action.payments.reduce((sum, item) => sum + item.amount, 0) === action.amount, '实付金额之和应等于账单金额。');
-    const previousParticipants = new Set(existing?.splits.map(item => item.id));
-    ensure(Array.isArray(action.specifications) && action.specifications.every(item => item && (active.has(item.id) || previousParticipants.has(item.id))), '请选择有效的分摊成员。');
     record.payments = action.payments.map(({ id, amount }) => ({ id, amount }));
-    record.method = action.method;
-    record.specifications = action.specifications.map(({ id, value }) => ({ id, value: action.method === 'equal' ? 1 : value }));
-    record.splits = allocate(action.amount, record.method, record.specifications);
+    record.method = action.method ?? 'none';
+    record.specifications = [];
+    record.splits = [];
+    if (record.method !== 'none') {
+      const previousParticipants = new Set(existing?.splits.map(item => item.id));
+      ensure(Array.isArray(action.specifications) && action.specifications.every(item => item && (active.has(item.id) || previousParticipants.has(item.id))), '请选择有效的分摊成员。');
+      record.specifications = action.specifications.map(({ id, value }) => ({ id, value: record.method === 'equal' ? 1 : value }));
+      record.splits = allocate(action.amount, record.method, record.specifications);
+    }
   } else {
     const known = new Set(members.map(member => member.id));
     ensure(active.has(action.payer) || action.payer === existing?.payer || (action.type === 'repayment' && known.has(action.payer)), '请选择有效成员。');

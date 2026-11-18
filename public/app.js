@@ -484,7 +484,7 @@ function details(id) {
   };
   if (record.type === 'expense') {
     safeLabels['付款明细'] = record.payments.map(({ id, amount }) => payment(id, amount)).join('<br>');
-    safeLabels['分摊明细'] = record.splits.map(({ id, amount }) => payment(id, amount)).join('<br>');
+    safeLabels['分摊明细'] = record.method === 'none' ? '不分摊' : record.splits.map(({ id, amount }) => payment(id, amount)).join('<br>');
   } else {
     safeLabels[record.type === 'repayment' ? '付款成员' : '入账成员'] = e(member(record.payer).name);
     if (record.type === 'repayment') safeLabels['收款成员'] = e(member(record.recipient).name);
@@ -524,7 +524,7 @@ function repayDialog(payer, recipient, total) {
 
 function recordDialog(record = null) {
   let type = record?.type ?? 'expense';
-  let method = record?.method ?? 'equal';
+  let method = record?.method ?? 'none';
   const payerIds = new Set(record?.payments?.map(item => item.id) ?? []);
   const splitIds = new Set(record?.splits?.map(item => item.id) ?? []);
   const available = ledger.members.filter(item => item.active || payerIds.has(item.id) || splitIds.has(item.id) || record?.payer === item.id);
@@ -532,7 +532,7 @@ function recordDialog(record = null) {
   const names = choices(available);
   const payAmounts = Object.fromEntries((record?.payments ?? []).map(item => [item.id, decimal(item.amount)]));
   const shares = Object.fromEntries((record?.specifications ?? []).map(({ id, value }) => [id, method === 'fixed' || method === 'percentage' ? decimal(value) : String(value)]));
-  const enabled = new Set(record?.type === 'expense' ? splitIds : activeMembers().map(item => item.id));
+  const enabled = new Set(method === 'none' ? activeMembers().map(item => item.id) : splitIds);
   let base = {
     title: record?.title ?? '', amount: record ? decimal(record.amount) : '', date: record?.date ?? dateKey(),
     note: record?.note ?? '', category: record?.category ?? 'dining', payer: record?.payer ?? record?.payments?.[0]?.id ?? who(),
@@ -549,14 +549,15 @@ function recordDialog(record = null) {
       input('payment:' + item.id, payAmounts[item.id] ?? '', 'inputmode="decimal" placeholder="实付金额" aria-label="' + e(item.name) + '实付金额"') + '</label>').join('') + '</div>' :
       field(paymentHeader, select('payer', names, base.payer));
     const payMode = type === 'expense' && names.length > 1 ? '<label class="split-line"><span>多人共同付款</span><input type="checkbox" id="multi-pay"' + (multi ? ' checked' : '') + '></label>' : '';
-    const split = type === 'expense' && isShared() ? field('分摊方式', select('method', Object.entries(methods), method)) +
-      '<div class="split-box">' + available.map(item => '<div class="split-line"><label><input type="checkbox" name="include:' + e(item.id) + '"' + (enabled.has(item.id) ? ' checked' : '') + '>' + person(item.id) + e(item.name) + '</label>' +
+    const showSplitMode = type === 'expense' && isShared();
+    const split = showSplitMode ? field('分摊方式 <small>可选</small>', select('method', [['none', '不分摊'], ...Object.entries(methods)], method)) : '';
+    const splitDetails = showSplitMode && method !== 'none' ? '<div class="split-box">' + available.map(item => '<div class="split-line"><label><input type="checkbox" name="include:' + e(item.id) + '"' + (enabled.has(item.id) ? ' checked' : '') + '>' + person(item.id) + e(item.name) + '</label>' +
         (method === 'equal' ? '<strong data-preview="' + e(item.id) + '"></strong>' : input('share:' + item.id, shares[item.id] ?? (method === 'shares' ? '1' : ''), 'inputmode="' + (method === 'shares' ? 'numeric' : 'decimal') + '" placeholder="' + ({ fixed: '金额（元）', percentage: '比例（%）', shares: '份数' }[method]) + '" aria-label="' + e(item.name) + '分摊数值"')) +
         '</div>').join('') + '</div><div class="split-caption" id="split-summary" aria-live="polite"></div>' : '';
     const title = field('账单摘要', input('title', base.title, 'required maxlength="64" placeholder="例如：周末聚餐"' + (changed ? '' : ' autofocus')));
     dialog(record ? '编辑账单' : '记一笔', '', tabs + title +
       '<div class="two-fields">' + field('金额（元）', input('amount', base.amount, 'required inputmode="decimal" placeholder="0.00"')) + field('日期', input('date', base.date, 'required type="date"')) + '</div>' +
-      field('分类', select('category', categoriesForType, base.category)) + payment + payMode + split +
+      field('分类', select('category', categoriesForType, base.category)) + payment + payMode + split + splitDetails +
       field('备注 <small>可选</small>', '<textarea name="note" maxlength="300" placeholder="添加备注">' + e(base.note) + '</textarea>'),
       submitFooter('保存账单'),
       async data => {
@@ -564,13 +565,10 @@ function recordDialog(record = null) {
         const amount = centsFromText(base.amount);
         const action = { kind: 'record', id: record?.id, type, title: base.title, amount, date: base.date, note: base.note, category: base.category };
         if (type === 'expense') {
-          const payments = multi ? available.filter(item => payAmounts[item.id]?.trim() && centsFromText(payAmounts[item.id]) !== 0)
+          action.payments = multi ? available.filter(item => payAmounts[item.id]?.trim() && centsFromText(payAmounts[item.id]) !== 0)
             .map(item => ({ id: item.id, amount: centsFromText(payAmounts[item.id]) })) : [{ id: base.payer, amount }];
-          Object.assign(action, {
-            payments,
-            method: isShared() ? method : 'equal',
-            specifications: isShared() ? specifications() : [{ id: who(), value: 1 }],
-          });
+          action.method = isShared() ? method : 'equal';
+          if (action.method !== 'none') action.specifications = isShared() ? specifications() : [{ id: who(), value: 1 }];
         } else action.payer = base.payer;
         await submitAction(action);
         if (page === 'overview' || (page === 'records' && !showDeleted)) month = action.date.slice(0, 7);
@@ -610,7 +608,7 @@ function recordDialog(record = null) {
     if (type === 'expense') for (const item of available) {
       if (data.has('payment:' + item.id)) payAmounts[item.id] = String(data.get('payment:' + item.id));
       if (data.has('share:' + item.id)) shares[item.id] = String(data.get('share:' + item.id));
-      if (data.has('method')) {
+      if (data.has('method') && method !== 'none') {
         if (data.has('include:' + item.id)) enabled.add(item.id);
         else enabled.delete(item.id);
       }
