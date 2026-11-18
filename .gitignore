@@ -1,0 +1,4 @@
+dist/
+.wallet-local.sqlite*
+node_modules/
+.openai/local*
