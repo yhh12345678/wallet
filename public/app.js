@@ -395,9 +395,14 @@ function render() {
   const accountLabel = accountAuth ? 'Wallet 账号' : 'ChatGPT 账号';
   const demoMode = ledger.id === 'demo';
   const title = page === 'overview' ? '账本总览' : heading;
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const themeButton = '<button type="button" class="icon-button theme-toggle" data-theme-toggle aria-label="深色模式" aria-pressed="' +
+    dark + '" title="' + (dark ? '切换浅色模式' : '切换深色模式') + '">' +
+    '<span class="theme-light-option" aria-hidden="true">' + icon('sun', 17) + '<span>浅色</span></span>' +
+    '<span class="theme-dark-option" aria-hidden="true">' + icon('moon', 17) + '<span>深色</span></span></button>';
   const upper = '<header class="top"><div class="breadcrumbs"><span>我的账本</span>' + icon('chevron', 13) + '<strong>' + e(ledger.state.name) + '</strong></div><div class="mobile-switch">' + switcher('mobile') +
     '</div><div class="top-meta">' + (demoMode ? tag('示例账本') : tag('云端账本', true)) +
-    iconButton('更多功能', 'tools', 'dots') + '</div></header>';
+    themeButton + iconButton('更多功能', 'tools', 'dots') + '</div></header>';
   const actions = (isShared() && canManage() ? button('邀请成员', 'invite', 'person', 'outline') : '') +
     (canWrite() ? button('记一笔', 'new', 'plus', 'primary') : '');
   const banner = issue ? '<div class="retry"><span>' + e(issue) + '</span>' + button('重试', 'retry', '', 'outline') + '</div>' : '';

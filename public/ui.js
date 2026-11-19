@@ -24,6 +24,8 @@ const paths = {
   car: '<path d="m5 11 1.5-4A2 2 0 0 1 8.4 6h7.2a2 2 0 0 1 1.9 1l1.5 4M5 11h14a2 2 0 0 1 2 2v4H3v-4a2 2 0 0 1 2-2zm0 6v3m14-3v3M7 14h.01m10 0h.01"/>',
   sparkle: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3z"/>',
   dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/>',
+  moon: '<path d="M20.4 15A9 9 0 0 1 9 3.6 9 9 0 1 0 20.4 15Z"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   history: '<path d="M3 12a9 9 0 1 1 2.5 6.2M3 5v7h7m2-5v5l3 2"/>',

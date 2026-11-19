@@ -28,6 +28,7 @@ const index = await readFile(resolve(publicDir, 'index.html'), 'utf8');
 await Promise.all([
   writeFile(resolve(output, 'index.html'), index.replace('<meta charset="utf-8">', '$&\n  <meta http-equiv="Content-Security-Policy" content="' + policy + '">')),
   copyFile(resolve(publicDir, 'style.css'), resolve(output, 'style.css')),
+  copyFile(resolve(publicDir, 'theme.js'), resolve(output, 'theme.js')),
   build({
     entryPoints: [resolve(publicDir, 'app.js')],
     outfile: resolve(output, 'app.js'),
