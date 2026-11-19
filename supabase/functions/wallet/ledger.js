@@ -1,4 +1,4 @@
-import { blankLedger, label, mutate, roles, WalletError } from '../_shared/model.js';
+import { blankLedger, confirmLedgerDeletion, label, mutate, roles, WalletError } from '../_shared/model.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -80,6 +80,13 @@ async function writeLedger(db, id, endpoint, data, user) {
     const { state, version, members } = ledger;
     const actor = members.find(member => member.id === user.id);
 
+    if (endpoint === 'delete') {
+      confirmLedgerDeletion(actor.role, state.name, version, data);
+      await sql`delete from wallet.members where ledger_id = ${id}`;
+      await sql`delete from wallet.ledgers where id = ${id}`;
+      return { deleted: true };
+    }
+
     if (endpoint === 'invite') {
       if (!['owner', 'admin'].includes(actor.role) || state.kind !== 'shared') {
         throw new WalletError('只有共享账本管理员可以管理邀请。', 403);
@@ -150,7 +157,7 @@ export function walletHandler(db, authenticate, origins, register) {
       if (path === '/ledgers' && method === 'POST') return json(await createLedger(db, await payload(request), user), 201);
       if (path === '/join' && method === 'POST') return json(await joinLedger(db, await payload(request), user));
 
-      const [, id, endpoint] = path.match(/^\/ledgers\/([^/]+)(?:\/(actions|invite|members))?$/) ?? [];
+      const [, id, endpoint] = path.match(/^\/ledgers\/([^/]+)(?:\/(actions|invite|members|delete))?$/) ?? [];
       if (id && uuid.test(id)) {
         if (!endpoint && method === 'GET') return json(await readLedger(db, id, user.id));
         if (endpoint && method === 'POST') return json(await writeLedger(db, id, endpoint, await payload(request), user));

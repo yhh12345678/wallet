@@ -57,6 +57,7 @@ function member(id) { return ledger.members.find(item => item.id === id) ?? { na
 function who() { return ledger.id === 'demo' ? 'demo-you' : user?.id; }
 function myRole() { return member(who()).role; }
 function canManage() { return ['owner', 'admin'].includes(myRole()); }
+function canDeleteLedger() { return ledger.id !== 'demo' && myRole() === 'owner'; }
 function canWrite() { return myRole() !== 'viewer'; }
 function isShared() { return ledger.state.kind === 'shared'; }
 function activeMembers() { return ledger.members.filter(item => item.active); }
@@ -88,9 +89,10 @@ function nav() {
 function switcher(location) {
   const items = [...ledgers, { id: 'demo', name: '四人宿舍账本（示例）', kind: 'shared' }];
   const other = items.map(item => button(item.name, 'switch', item.kind === 'shared' ? 'people' : 'wallet', '', 'data-id="' + e(item.id) + '"' + (item.id === ledger.id ? ' aria-current="true"' : ''))).join('');
+  const remove = canDeleteLedger() ? '<div class="separator"></div>' + button('删除当前账本', 'delete-ledger', '', 'danger') : '';
   return '<button type="button" class="ledger-switch" data-action="ledger-menu" data-location="' + location + '" aria-label="切换账本" aria-expanded="' + String(menu === location) + '">' +
     '<span class="ledger-symbol">' + icon(isShared() ? 'home' : 'wallet', 18) + '</span><span><b>' + e(ledger.state.name) + '</b><small>' + (isShared() ? '共享账本' : '个人账本') + ' · ' + activeMembers().length + ' 位成员</small></span>' + icon('down', 14) + '</button>' +
-    (menu === location ? '<div class="ledger-popup">' + other + '<div class="separator"></div>' + button('创建账本', 'create', 'plus', '') + button('加入账本', 'join', 'person', '') + '</div>' : '');
+    (menu === location ? '<div class="ledger-popup">' + other + '<div class="separator"></div>' + button('创建账本', 'create', 'plus', '') + button('加入账本', 'join', 'person', '') + remove + '</div>' : '');
 }
 
 function memberStrip() {
@@ -308,7 +310,8 @@ function membersPage() {
     '<div class="audit-row">' + person(item.actor) + '<span><strong>' + e(member(item.actor).name) + '</strong> ' + e(item.description) + '</span><small>' + new Date(item.time).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</small></div>',
   ).join('') : empty('暂无操作记录', 'history');
   return '<div class="stack">' + panel('成员列表', activeMembers().length + ' 位成员', roster, canManage() ? button('编辑账本名称', 'rename', 'edit', 'outline') : '') +
-    panel('操作记录', '最近 100 条', events) + '</div>';
+    panel('操作记录', '最近 100 条', events) + (canDeleteLedger() ?
+      panel('账本管理', '', button('删除账本', 'delete-ledger', '', 'danger')) : '') + '</div>';
 }
 
 function render() {
@@ -583,6 +586,40 @@ function renameDialog() {
     async data => { await submitAction({ kind: 'rename', name: data.get('name') }); finish('账本名称已更新'); });
 }
 
+function deleteLedgerDialog() {
+  if (!canDeleteLedger()) return;
+  const { id, version, state } = ledger;
+  const warning = state.kind === 'shared' ?
+    '所有成员都会失去访问权限，邀请链接也会失效。' : '';
+  dialog('永久删除账本？', state.name,
+    '<p class="note-box">删除后，账单、预算和结算记录将永久清除，无法恢复。' + warning + '</p>' +
+    field('输入完整账本名称以确认', input('name', '', 'required maxlength="40" autocomplete="off" spellcheck="false"')),
+    button('取消', 'close', '', 'outline') + '<button type="submit" class="btn danger">确认删除</button>',
+    async data => {
+      const name = data.get('name');
+      if (name !== state.name) throw new Error('请输入完整的账本名称以确认删除。');
+      let message = '账本已删除';
+      try {
+        await api('ledgers/' + id + '/delete', { name, version });
+      } catch (error) {
+        if (error.status === 409) {
+          ledger = await api('ledgers/' + id);
+          deleteLedgerDialog();
+          toast('账本刚刚更新，请重新确认删除。');
+          return;
+        }
+        if (error.status !== 404) throw error;
+        await listLedgers();
+        if (ledgers.some(item => item.id === id)) throw error;
+        message = '该账本已无法访问。';
+      }
+      ledgers = ledgers.filter(item => item.id !== id);
+      modal.close();
+      await selectLedger('demo');
+      toast(message);
+    });
+}
+
 function roleDialog(id) {
   const target = member(id);
   dialog('管理成员', target.name, field('账本角色', select('role', Object.entries(roles).filter(([role]) => role !== 'owner'), target.role)) +
@@ -825,6 +862,7 @@ const actions = {
   invite: inviteDialog,
   budget: budgetDialog,
   rename: renameDialog,
+  'delete-ledger': deleteLedgerDialog,
   role: ({ id }) => roleDialog(id),
   'calendar-day': ({ date }) => calendarDayDialog(date),
   'month-analysis': ({ type }) => monthlyAnalysis(type),

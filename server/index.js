@@ -1,4 +1,4 @@
-import { blankLedger, label, mutate, roles, WalletError } from './model.js';
+import { blankLedger, confirmLedgerDeletion, label, mutate, roles, WalletError } from './model.js';
 import { assets } from './assets.js';
 
 const security = {
@@ -106,7 +106,7 @@ async function api(request, env, url) {
     throw new WalletError('邀请码已失效、账本已满，或你的成员权限已被移除。', 404);
   }
 
-  const match = pathname.match(/^\/api\/ledgers\/([0-9a-f-]{36})(?:\/(actions|invite|members))?$/);
+  const match = pathname.match(/^\/api\/ledgers\/([0-9a-f-]{36})(?:\/(actions|invite|members|delete))?$/);
   if (!match) throw new WalletError('页面不存在。', 404);
   const [, id, endpoint] = match;
   const row = await readLedger(db, id, user.id);
@@ -115,6 +115,21 @@ async function api(request, env, url) {
   if (!endpoint && method === 'GET') {
     const { results: members } = await membersFor(db, id);
     return json({ id, version: row.version, state: JSON.parse(row.document), members });
+  }
+
+  if (endpoint === 'delete' && method === 'POST') {
+    const confirmation = await payload(request);
+    confirmLedgerDeletion(row.role, JSON.parse(row.document).name, row.version, confirmation);
+    // Defer the foreign key check until the authorized parent and its members are both removed.
+    const [, removed] = await db.batch([
+      db.prepare('PRAGMA defer_foreign_keys = ON'),
+      db.prepare('DELETE FROM wallet_ledgers WHERE id = ? AND version = ? AND ' + updateGuard)
+        .bind(id, row.version, user.id, 'owner'),
+      db.prepare('DELETE FROM wallet_members WHERE ledger_id = ? AND NOT EXISTS (SELECT 1 FROM wallet_ledgers WHERE id = ?)')
+        .bind(id, id),
+    ]);
+    if (removed.meta.changes !== 1) throw new WalletError('账本刚刚更新，请重新确认删除。', 409);
+    return json({ deleted: true });
   }
 
   if (endpoint === 'invite' && method === 'POST') {

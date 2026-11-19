@@ -93,6 +93,12 @@ export function blankLedger(name, kind = 'shared') {
   return { name: label(name, 40, '账本名称需要 1 至 40 个字符。'), kind, records: [], budgets: {}, audit: [] };
 }
 
+export function confirmLedgerDeletion(role, name, version, confirmation) {
+  ensure(role === 'owner', '只有账本创建者可以删除账本。', 403);
+  ensure(confirmation.version === version, '账本刚刚更新，请重新确认删除。', 409);
+  ensure(confirmation.name === name, '请输入完整的账本名称以确认删除。');
+}
+
 export function summarize(state, month) {
   const records = state.records.filter(record => !record.deleted && record.date.startsWith(month));
   const expenses = records.filter(record => record.type === 'expense');

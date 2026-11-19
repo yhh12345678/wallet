@@ -180,3 +180,50 @@ test('独立个人账本和并发写入防覆盖', async () => {
     DB.close();
   }
 });
+
+test('创建者确认后可原子删除账本，撤销成员访问和邀请', async () => {
+  const DB = localDb();
+  async function call(path, user, body) {
+    const headers = { 'content-type': 'application/json' };
+    if (user) headers['oai-authenticated-user-id'] = user;
+    const response = await worker.fetch(new Request('https://wallet.example/api/' + path, {
+      method: body === undefined ? 'GET' : 'POST', headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { DB });
+    return { status: response.status, data: await response.json() };
+  }
+
+  try {
+    const { data: { id } } = await call('ledgers', 'owner', { name: '待删除的共享账本', kind: 'shared' });
+    const { data: { id: personal } } = await call('ledgers', 'owner', { name: '独立账本', kind: 'personal' });
+    const link = 'ledgers/' + id;
+    const { data: { code } } = await call(link + '/invite', 'owner', {});
+    await call('join', 'guest', { code });
+    await call(link + '/members', 'owner', { id: 'guest', role: 'admin', active: true });
+    const { data: { version, state } } = await call(link, 'owner');
+    const confirmation = { version, name: state.name };
+
+    assert.equal((await call(link + '/delete', null, confirmation)).status, 401);
+    assert.equal((await call(link + '/delete', 'outside', confirmation)).status, 404);
+    assert.equal((await call(link + '/delete', 'guest', confirmation)).status, 403);
+    assert.equal((await call(link + '/delete', 'owner', { ...confirmation, name: '名称错误' })).status, 400);
+    assert.equal((await call(link + '/delete', 'owner', { ...confirmation, version: version - 1 })).status, 409);
+    assert.equal((await call(link, 'guest')).status, 200);
+
+    const duplicate = await Promise.all([
+      call(link + '/delete', 'owner', confirmation),
+      call(link + '/delete', 'owner', confirmation),
+    ]);
+    assert.equal(duplicate.filter(result => result.data.deleted === true).length, 1);
+    assert.ok(duplicate.some(result => [404, 409].includes(result.status)));
+    assert.equal((await call(link, 'guest')).status, 404);
+    assert.equal((await call('join', 'outsider', { code })).status, 404);
+    assert.deepEqual((await call('ledgers', 'owner')).data.ledgers.map(item => item.id), [personal]);
+    assert.deepEqual((await call('ledgers', 'guest')).data, { ledgers: [] });
+    assert.equal((await DB.prepare('SELECT COUNT(*) AS n FROM wallet_members WHERE ledger_id = ?').bind(id).first()).n, 0);
+    assert.deepEqual(await call('ledgers/' + personal + '/delete', 'owner', { version: 0, name: '独立账本' }),
+      { status: 200, data: { deleted: true } });
+  } finally {
+    DB.close();
+  }
+});
