@@ -1,4 +1,4 @@
-import { allocate, balances, categories, centsFromText, dateKey, expenseCategories, incomeCategories, methods, monthShift, mutate, roles, suggestions, summarize } from './model.js';
+import { allocate, balances, categories, centsFromText, dateKey, expenseCategories, incomeCategories, ledgerAccounts, methods, monthShift, mutate, roles, suggestions, summarize } from './model.js';
 import { avatar, decimal, demoLedger, escape as e, icon, money, monthLabel, shortDate } from './ui.js';
 import { api as requestApi, accountAuth } from './backend.js';
 import { calendarDays } from './calendar.js';
@@ -22,14 +22,17 @@ let busy = false;
 let loadSequence = 0;
 let sessionVersion = 0;
 let invitation = '';
+let calendarDate = dateKey();
+let analysisType = 'expense';
 const pages = {
   overview: ['账本总览', 'grid', '查看收支、预算和待结算款项。'],
+  calendar: ['收支日历', 'calendar', '选择日期，查看当天的账单。'],
   records: ['收支明细', 'list', '查找账单、核对付款与分摊金额。'],
   settlements: ['分摊结算', 'arrows', '查看成员净余额并登记已完成的还款。'],
   analytics: ['统计预算', 'chart', '查看支出构成和月度预算使用情况。'],
   members: ['账本成员', 'people', '管理共享账本的成员、角色与操作记录。'],
 };
-const typeLabels = { expense: '支出', income: '收入', repayment: '还款' };
+const typeLabels = { expense: '支出', income: '收入', transfer: '转账', repayment: '还款' };
 const compactCalendarMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 });
 const sharePercent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 });
 
@@ -59,6 +62,8 @@ function myRole() { return member(who()).role; }
 function canManage() { return ['owner', 'admin'].includes(myRole()); }
 function canDeleteLedger() { return ledger.id !== 'demo' && myRole() === 'owner'; }
 function canWrite() { return myRole() !== 'viewer'; }
+function accountChoices() { return [['default', '默认账户'], ...(ledger.state.accounts ?? []).map(({ id, name }) => [id, name])]; }
+function accountName(id) { return accountChoices().find(([key]) => key === (id ?? 'default'))?.[1] ?? '未知账户'; }
 function isShared() { return ledger.state.kind === 'shared'; }
 function activeMembers() { return ledger.members.filter(item => item.active); }
 function person(id, extra) { return avatar(member(id).name, Math.max(0, ledger.members.findIndex(item => item.id === id)), extra); }
@@ -110,7 +115,8 @@ function panel(title, description, body, trailing = '', extra = '') {
 
 function metric(title, value, detail, symbol, color, { leading = false, type = '' } = {}) {
   const tag = type ? 'button' : 'section';
-  const action = type ? ' type="button" data-action="month-analysis" data-type="' + type + '" aria-haspopup="dialog"' : '';
+  const action = type ? ' type="button" data-action="' + (type === 'accounts' ? 'accounts' : 'month-analysis') +
+    '" data-type="' + type + '" aria-haspopup="dialog"' : '';
   const hint = type ? '<span class="metric-hint">查看分析</span>' : '';
   return '<' + tag + ' class="card metric' + (leading ? ' leading' : '') + (type ? ' metric-interactive' : '') + '"' + action +
     '><span class="metric-top"><span>' + title + '</span><span class="metric-icon ' + color + '">' + icon(symbol, 17) +
@@ -151,10 +157,11 @@ function dailyCalendar() {
     const amounts = calendarAmount(income, 'income', '+') + calendarAmount(spending, 'expense', '−');
     const content = amounts || '<span class="calendar-idle">' + (items.length ? '还款' : '—') + '</span>';
     return '<button type="button" class="calendar-day' + (items.length ? ' has-records' : '') +
+      (page === 'calendar' && date === calendarDate ? ' selected-day' : '') +
       '" data-action="calendar-day" data-date="' + e(date) + '" aria-haspopup="dialog" aria-label="' + e(label) +
       '"' + (date === today ? ' aria-current="date"' : '') + ' title="' + e(label) + '">' +
       '<span class="calendar-number">' + Number(date.slice(8)) + '</span><span class="calendar-amounts" aria-hidden="true">' +
-      content + '</span></button>';
+      (amounts ? content : items.length ? '<span class="calendar-idle">' + typeLabels[items[0].type] + '</span>' : content) + '</span></button>';
   }).join('');
   const trailing = (7 - (offset + days.length) % 7) % 7;
   const legend = '<div class="calendar-legend"><span class="income">＋ 收入</span><span class="expense">− 支出</span></div>';
@@ -171,6 +178,19 @@ function calendarDayDialog(date) {
     '</strong></div><div><span>支出</span><strong class="num expense">' + money(spending) + '</strong></div></div>';
   dialog(shortDate(date) + '收支', date.slice(0, 4) + ' 年 · ' + items.length + ' 笔账单',
     totals + (items.length ? records(sortRecords(items)) : empty('当天暂无账单', 'calendar')), button('关闭', 'close', '', 'outline'));
+}
+
+function calendarPage() {
+  const { days } = calendarDays(ledger.state.records, month);
+  if (!calendarDate.startsWith(month + '-')) calendarDate = days[0].date;
+  const selected = days.find(day => day.date === calendarDate) ?? days[0];
+  const stats = summarize(ledger.state, month);
+  return dailyCalendar() + '<div class="calendar-strip">' +
+    [['月收入', money(stats.income)], ['月支出', money(stats.spending)], ['月净收支', signedMoney(stats.income - stats.spending)]]
+      .map(([label, value]) => '<div><span>' + label + '</span><strong>' + value + '</strong></div>').join('') + '</div>' +
+    panel(shortDate(selected.date) + '账单', '收入 ' + money(selected.income) + '　支出 ' + money(selected.spending),
+      selected.records.length ? records(sortRecords(selected.records)) : empty('当天暂无账单', 'calendar'),
+      canWrite() ? button('记一笔', 'new', 'plus', 'outline', 'data-date="' + e(selected.date) + '"') : '');
 }
 
 function budget(stats) {
@@ -190,9 +210,10 @@ function categoryIcon(key) {
 function records(items) {
   if (!items.length) return empty(showDeleted && page === 'records' ? '回收站为空' : '该时段暂无匹配账单');
   return '<ul class="data-list">' + items.map(item => {
-    const payer = item.type === 'expense' ? item.payments.map(payment => member(payment.id).name).join('、') : member(item.payer).name;
+    const payer = item.type === 'transfer' ? accountName(item.fromAccount) + ' → ' + accountName(item.toAccount) :
+      item.type === 'expense' ? item.payments.map(payment => member(payment.id).name).join('、') : member(item.payer).name;
     return '<li><button class="record" type="button" data-action="details" data-id="' + e(item.id) + '"><span class="record-title">' + categoryIcon(item.category) + '<span><b>' + e(item.title) + '</b><small>' + categories[item.category].name + ' · ' + e(payer) + '</small></span></span>' +
-      '<span class="record-date">' + shortDate(item.date) + '</span><span class="record-amount num ' + (item.type === 'income' ? 'positive' : '') + '">' + ({ expense: '−', income: '+', repayment: '' }[item.type]) + money(item.amount) + '</span></button></li>';
+      '<span class="record-date">' + shortDate(item.date) + '</span><span class="record-amount num ' + (item.type === 'income' ? 'positive' : '') + '">' + ({ expense: '−', income: '+' }[item.type] ?? '') + money(item.amount) + '</span></button></li>';
   }).join('') + '</ul>';
 }
 
@@ -213,10 +234,12 @@ function overview() {
   const percent = previous.spending ? Math.round((stats.spending - previous.spending) / previous.spending * 100) : null;
   const spendFoot = percent === null ? stats.records.filter(item => item.type === 'expense').length + ' 笔支出' : '较上月 <b>' + (percent > 0 ? '+' : '') + percent + '%</b>';
   const debt = suggestions(ledger.state.records);
-  return '<div class="toolbar">' + monthControl() + memberStrip() + '</div><div class="cards">' +
+  const totalAssets = ledgerAccounts(ledger.state).reduce((sum, item) => sum + item.balance, 0);
+  return '<div class="toolbar">' + monthControl() + memberStrip() + '</div><form class="overview-search" id="overview-search">' +
+    '<input name="search" aria-label="搜索账单" placeholder="搜索摘要、金额、分类或账户"><button type="submit" class="btn outline">搜索</button></form><div class="cards">' +
     metric('本月支出', money(stats.spending), spendFoot, 'upRight', 'violet', { leading: true, type: 'expense' }) +
     metric('本月收入', money(stats.income), stats.records.filter(item => item.type === 'income').length + ' 笔入账', 'downLeft', 'green', { type: 'income' }) +
-    metric('剩余预算', stats.budget ? signedMoney(stats.remaining) : '—', stats.budget ? '总预算 ' + money(stats.budget) : '预算待设置', 'wallet', 'blue') + '</div>' +
+    metric('账户净额', signedMoney(totalAssets), '账本内所有账户', 'wallet', 'blue', { type: 'accounts' }) + '</div>' +
     '<div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar() +
     '<div class="dashboard-row">' + panel('最近账单', '', records(sortRecords(stats.records).slice(0, 4)), button('查看明细', 'page', 'chevron', 'text', 'data-page="records"'), 'table-panel') +
     (isShared() ? panel('待结算款项', debt.length ? debt.length + ' 笔建议转账' : '按全部历史账单计算', settlementList(debt.slice(0, 3), true), button('查看', 'page', 'chevron', 'text', 'data-page="settlements"')) : panel('支出构成', monthLabel(month), breakdown(stats))) + '</div>';
@@ -227,7 +250,9 @@ function filteredRecords() {
   return sortRecords(ledger.state.records.filter(item => Boolean(item.deleted) === showDeleted &&
     (showDeleted || item.date.startsWith(month)) && (typeFilter === 'all' || typeFilter === item.type) &&
     (categoryFilter === 'all' || categoryFilter === item.category) &&
-    (!needle || [item.title, item.note, categories[item.category].name].some(value => value.toLocaleLowerCase('zh-CN').includes(needle)))));
+    (!needle || [item.title, item.note, categories[item.category].name, decimal(item.amount),
+      ...(item.type === 'transfer' ? [accountName(item.fromAccount), accountName(item.toAccount)] : [accountName(item.accountId)])
+    ].some(value => value.toLocaleLowerCase('zh-CN').includes(needle)))));
 }
 
 function options(items, selected) {
@@ -284,8 +309,39 @@ function monthlyAnalysis(type) {
 
 function analytics() {
   const stats = summarize(ledger.state, month);
-  return '<div class="toolbar">' + monthControl() + '</div><div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar() +
-    panel('分类支出', monthLabel(month), breakdown(stats));
+  const modes = ['expense', 'income', 'transfer'];
+  const tabs = '<div class="mode-tabs finance-tabs" aria-label="统计类型">' + modes.map(type =>
+    '<button type="button" data-action="analysis-mode" data-type="' + type + '" aria-pressed="' + (type === analysisType) +
+    '" class="' + (type === analysisType ? 'chosen' : '') + '">' + typeLabels[type] + '</button>').join('') + '</div>';
+  const items = stats.records.filter(item => item.type === analysisType);
+  const totals = {};
+  for (const item of items) totals[item.category] = (totals[item.category] ?? 0) + item.amount;
+  const total = items.reduce((sum, item) => sum + item.amount, 0);
+  const buckets = Array.from({ length: 5 }, () => 0);
+  for (const item of items) buckets[Math.floor((Number(item.date.slice(8)) - 1) / 7)] += item.amount;
+  const top = Math.max(1, ...buckets);
+  const daysInMonth = calendarDays([], month).days.length;
+  const columns = buckets.slice(0, Math.ceil(daysInMonth / 7)).map((amount, i) => '<div><strong>' + money(amount) + '</strong><div class="finance-bar-track"><i style="--fill:' +
+    amount / top * 100 + '%"></i></div><span>' + (i * 7 + 1) + '–' + Math.min(daysInMonth, (i + 1) * 7) + '日</span></div>').join('');
+  let start = 0;
+  const colors = ['#729eec', '#73c2b1', '#e2aa70', '#aa98e7', '#dc87a5', '#8498a8'];
+  const arcs = Object.values(totals).map((value, i) => {
+    const previous = start;
+    start += value / total * 100;
+    return colors[i % colors.length] + ' ' + previous + '% ' + start + '%';
+  });
+  const composition = total ? '<div class="finance-composition"><div class="finance-donut" aria-hidden="true" style="--slices:' +
+    arcs.join(',') + '"><strong>' + money(total) + '</strong></div>' + categoryBreakdown(totals, total, true) + '</div>' :
+    empty('该月暂无' + typeLabels[analysisType], 'chart');
+  return '<div class="toolbar">' + monthControl() + '</div>' + tabs +
+    '<div class="finance-summary">' + [['月净收支', signedMoney(stats.income - stats.spending)],
+      [typeLabels[analysisType] + '总额', money(total)], analysisType === 'transfer' ?
+        ['转账手续费', money(items.reduce((sum, item) => sum + item.fee, 0))] : ['平均每笔', items.length ? money(Math.round(total / items.length)) : '—']]
+      .map(([label, value]) => '<div class="card"><span>' + label + '</span><strong>' + value + '</strong></div>').join('') + '</div>' +
+    '<div class="dashboard-row">' + panel('分类构成', items.length + ' 笔' + typeLabels[analysisType], composition) +
+    panel('按日期区间', '', '<div class="finance-bars">' + columns + '</div>') + '</div>' +
+    panel(typeLabels[analysisType] + '明细', '', records(sortRecords(items))) +
+    '<div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar();
 }
 
 function settlements() {
@@ -321,7 +377,8 @@ function render() {
   const demoMode = ledger.id === 'demo';
   const title = page === 'overview' ? '账本总览' : heading;
   const upper = '<header class="top"><div class="breadcrumbs"><span>我的账本</span>' + icon('chevron', 13) + '<strong>' + e(ledger.state.name) + '</strong></div><div class="mobile-switch">' + switcher('mobile') +
-    '</div><div class="top-meta">' + (demoMode ? tag('示例账本') + button('创建账本', 'create', 'plus', 'outline') : tag('云端账本', true)) + '</div></header>';
+    '</div><div class="top-meta">' + (demoMode ? tag('示例账本') : tag('云端账本', true)) +
+    iconButton('更多功能', 'tools', 'dots') + '</div></header>';
   const actions = (isShared() && canManage() ? button('邀请成员', 'invite', 'person', 'outline') : '') +
     (canWrite() ? button('记一笔', 'new', 'plus', 'primary') : '');
   const banner = issue ? '<div class="retry"><span>' + e(issue) + '</span>' + button('重试', 'retry', '', 'outline') + '</div>' : '';
@@ -329,7 +386,13 @@ function render() {
     '<div class="side-ledger">' + switcher('desktop') + '</div><div class="section-label">工作台</div><nav aria-label="主导航">' + nav() + '</nav><div class="side-foot">' + avatar(signed || member(who()).name, 0, 'avatar-lg') + '<div><strong>' + e(signed || member(who()).name) + '</strong><small>' + (signed ? accountLabel : '示例账本') + '</small></div>' +
     iconButton('账本与登录', 'account', 'dots') + '</div></aside><div class="workspace">' + upper + '<main class="main">' + banner +
     '<div class="page-head"><div><div class="eyebrow">' + (isShared() ? '共享账本' : '个人账本') + '</div><h1>' + title + '</h1><p>' + description + '</p></div><div class="head-actions">' + actions + '</div></div>' +
-    ({ overview, records: recordPage, settlements, analytics, members: membersPage }[page]()) + '</main></div><nav class="mobile-tabs" aria-label="移动导航">' + nav() + '</nav></div>';
+    ({ overview, calendar: calendarPage, records: recordPage, settlements, analytics, members: membersPage }[page]()) +
+    '</main></div><nav class="mobile-tabs" aria-label="移动导航">' + (canWrite() ?
+      iconButton('记一笔', 'new', 'plus', 'data-mobile-add="true"') : '') +
+    [['overview', '首页'], ['calendar', '日历'], ['analytics', '统计']].map(([key, label]) =>
+      '<button type="button" data-action="page" data-page="' + key + '" class="nav-item' + (page === key ? ' active' : '') +
+      '"' + (page === key ? ' aria-current="page"' : '') + '>' + icon(pages[key][1], 18) + '<span>' + label + '</span></button>').join('') +
+    '</nav></div>';
 }
 
 async function api(path, data) {
@@ -360,6 +423,7 @@ async function selectLedger(id, saveSelection = true) {
   if (seq !== loadSequence) return;
   ledger = selected;
   month = moment;
+  calendarDate = dateKey();
   page = 'overview';
   menu = '';
   query = '';
@@ -586,6 +650,28 @@ function renameDialog() {
     async data => { await submitAction({ kind: 'rename', name: data.get('name') }); finish('账本名称已更新'); });
 }
 
+function accountsDialog() {
+  const accounts = ledgerAccounts(ledger.state);
+  const total = accounts.reduce((sum, item) => sum + item.balance, 0);
+  const body = '<div class="account-balance"><span>账户净额</span><strong>' + signedMoney(total) + '</strong></div><ul class="account-list">' +
+    accounts.map(item => '<li><span>' + icon('wallet', 17) + e(item.name) + '</span><strong>' + signedMoney(item.balance) + '</strong></li>').join('') + '</ul>';
+  dialog('账户详情', ledger.state.name, body, button('关闭', 'close', '', 'outline') +
+    (canManage() ? button('添加账户', 'add-account', 'plus', 'primary') : ''));
+}
+
+function addAccountDialog() {
+  if (!canManage()) return;
+  dialog('添加账户', '', field('账户名称', input('name', '', 'required maxlength="30" autofocus')) +
+    field('期初余额（元）', input('opening', '0', 'inputmode="decimal" required')), submitFooter('保存账户'), async data => {
+    const raw = String(data.get('opening')).trim();
+    const opening = raw.startsWith('-') ? -centsFromText(raw.slice(1)) : centsFromText(raw);
+    await submitAction({ kind: 'account', name: data.get('name'), opening });
+    render();
+    accountsDialog();
+    toast('账户已添加');
+  });
+}
+
 function deleteLedgerDialog() {
   if (!canDeleteLedger()) return;
   const { id, version, state } = ledger;
@@ -654,10 +740,15 @@ function details(id, analysisType) {
   if (record.type === 'expense') {
     safeLabels['付款明细'] = record.payments.map(({ id, amount }) => payment(id, amount)).join('<br>');
     safeLabels['分摊明细'] = record.method === 'none' ? '不分摊' : record.splits.map(({ id, amount }) => payment(id, amount)).join('<br>');
+  } else if (record.type === 'transfer') {
+    safeLabels['转出账户'] = e(accountName(record.fromAccount));
+    safeLabels['转入账户'] = e(accountName(record.toAccount));
+    safeLabels['手续费'] = money(record.fee);
   } else {
     safeLabels[record.type === 'repayment' ? '付款成员' : '入账成员'] = e(member(record.payer).name);
     if (record.type === 'repayment') safeLabels['收款成员'] = e(member(record.recipient).name);
   }
+  if (record.type === 'expense' || record.type === 'income') safeLabels['账户'] = e(accountName(record.accountId));
   const body = '<div class="details-grid">' + Object.entries(safeLabels).map(([label, value]) => '<span>' + label + '</span><strong>' + value + '</strong>').join('') + '</div>' +
     (record.note ? '<div class="note-box">' + e(record.note) + '</div>' : '');
   const data = 'data-id="' + e(id) + '"';
@@ -693,8 +784,27 @@ function repayDialog(payer, recipient, total) {
     });
 }
 
-function recordDialog(record = null) {
-  let type = record?.type ?? 'expense';
+function amountKeypad() {
+  return '<div class="amount-keypad" aria-label="金额键盘">' + ['1','2','3','4','5','6','7','8','9','.','0','00','清空','⌫']
+    .map(key => '<button type="button" data-amount-key="' + key + '"' + (key === '⌫' ? ' aria-label="删除末位"' : '') + '>' + key + '</button>').join('') + '</div>';
+}
+
+function bindAmountKeypad(form) {
+  const amount = form.elements.amount;
+  for (const key of form.querySelectorAll('[data-amount-key]')) key.addEventListener('click', () => {
+    const value = key.dataset.amountKey;
+    const current = amount.value;
+    let next = value === '清空' ? '' : value === '⌫' ? current.slice(0, -1) : current + value;
+    if (next.startsWith('.')) next = '0' + next;
+    next = next.replace(/^0+(?=\d)/, '');
+    if (!/^\d{0,8}(?:\.\d{0,2})?$/.test(next)) return;
+    amount.value = next;
+    amount.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+function recordDialog(record = null, selectedDate = dateKey(), initialType = 'expense') {
+  let type = record?.type ?? initialType;
   let method = record?.method ?? 'none';
   const payerIds = new Set(record?.payments?.map(item => item.id) ?? []);
   const splitIds = new Set(record?.splits?.map(item => item.id) ?? []);
@@ -705,16 +815,21 @@ function recordDialog(record = null) {
   const shares = Object.fromEntries((record?.specifications ?? []).map(({ id, value }) => [id, method === 'fixed' || method === 'percentage' ? decimal(value) : String(value)]));
   const enabled = new Set(method === 'none' ? activeMembers().map(item => item.id) : splitIds);
   let base = {
-    title: record?.title ?? '', amount: record ? decimal(record.amount) : '', date: record?.date ?? dateKey(),
+    title: record?.title ?? '', amount: record ? decimal(record.amount) : '', date: record?.date ?? selectedDate,
     note: record?.note ?? '', category: record?.category ?? 'dining', payer: record?.payer ?? record?.payments?.[0]?.id ?? who(),
+    accountId: record?.accountId ?? 'default', fromAccount: record?.fromAccount ?? 'default',
+    toAccount: record?.toAccount ?? accountChoices()[1]?.[0] ?? '', fee: record?.fee ? decimal(record.fee) : '',
   };
   let changed = false;
 
   function draw() {
-    const tabs = record ? '' : '<div class="mode-tabs" aria-label="账单类型">' + ['expense', 'income'].map(key =>
+    const tabs = record ? '' : '<div class="mode-tabs" aria-label="账单类型">' + ['expense', 'income', 'transfer'].map(key =>
       '<button type="button" data-mode="' + key + '" aria-pressed="' + String(type === key) + '" class="' + (type === key ? 'chosen' : '') + '">' + typeLabels[key] + '</button>',
     ).join('') + '</div>';
-    const categoriesForType = (type === 'expense' ? expenseCategories : incomeCategories).map(key => [key, categories[key].name]);
+    const categoriesForType = type === 'expense' ? expenseCategories : incomeCategories;
+    const categoryGrid = '<div class="category-picker" role="group" aria-label="分类">' + categoriesForType.map(key =>
+      '<label><input type="radio" name="category" value="' + key + '"' + (base.category === key ? ' checked' : '') +
+      ' required><span>' + categoryIcon(key) + categories[key].name + '</span></label>').join('') + '</div>';
     const paymentHeader = type === 'income' ? '入账成员' : '付款成员';
     const payment = multi && type === 'expense' ? '<div class="split-box">' + available.map(item => '<label class="split-line"><span>' + e(item.name) + '</span>' +
       input('payment:' + item.id, payAmounts[item.id] ?? '', 'inputmode="decimal" placeholder="实付金额" aria-label="' + e(item.name) + '实付金额"') + '</label>').join('') + '</div>' :
@@ -725,27 +840,40 @@ function recordDialog(record = null) {
     const splitDetails = showSplitMode && method !== 'none' ? '<div class="split-box">' + available.map(item => '<div class="split-line"><label><input type="checkbox" name="include:' + e(item.id) + '"' + (enabled.has(item.id) ? ' checked' : '') + '>' + person(item.id) + e(item.name) + '</label>' +
         (method === 'equal' ? '<strong data-preview="' + e(item.id) + '"></strong>' : input('share:' + item.id, shares[item.id] ?? (method === 'shares' ? '1' : ''), 'inputmode="' + (method === 'shares' ? 'numeric' : 'decimal') + '" placeholder="' + ({ fixed: '金额（元）', percentage: '比例（%）', shares: '份数' }[method]) + '" aria-label="' + e(item.name) + '分摊数值"')) +
         '</div>').join('') + '</div><div class="split-caption" id="split-summary" aria-live="polite"></div>' : '';
-    const title = field('账单摘要', input('title', base.title, 'required maxlength="64" placeholder="例如：周末聚餐"' + (changed ? '' : ' autofocus')));
-    dialog(record ? '编辑账单' : '记一笔', '', tabs + title +
+    const title = field('摘要（可选）', input('title', base.title, 'maxlength="64" placeholder="默认使用分类名称"'));
+    const accounts = accountChoices();
+    const transferFields = '<div class="two-fields">' + field('转出账户', select('fromAccount', accounts, base.fromAccount)) +
+      field('转入账户', select('toAccount', accounts, base.toAccount)) + '</div>' +
+      field('手续费（元，可选）', amountInput('fee', base.fee)) +
+      (accounts.length < 2 && canManage() ? button('添加账户', 'add-account', 'plus', 'outline') : '');
+    dialog(record ? '编辑账单' : '记一笔', '', '<div class="quick-record">' + tabs +
+      (type === 'transfer' ? transferFields : categoryGrid + field('账户', select('accountId', accounts, base.accountId))) + title +
       '<div class="two-fields">' + field('金额（元）', input('amount', base.amount, 'required inputmode="decimal" placeholder="0.00"')) + field('日期', input('date', base.date, 'required type="date"')) + '</div>' +
-      field('分类', select('category', categoriesForType, base.category)) + payment + payMode + split + splitDetails +
-      field('备注 <small>可选</small>', '<textarea name="note" maxlength="300" placeholder="添加备注">' + e(base.note) + '</textarea>'),
+      '<details class="record-options"><summary>备注' + (type === 'transfer' ? '' : '、成员与分摊') + '</summary>' +
+      (type === 'transfer' ? '' : payment + payMode + split + splitDetails) +
+      field('备注 <small>可选</small>', '<textarea name="note" maxlength="300" placeholder="添加备注">' + e(base.note) + '</textarea>') +
+      '</details>' + amountKeypad() + '</div>',
       submitFooter('保存账单'),
       async data => {
         storeForm(data);
         const amount = centsFromText(base.amount);
-        const action = { kind: 'record', id: record?.id, type, title: base.title, amount, date: base.date, note: base.note, category: base.category };
+        const action = { kind: 'record', id: record?.id, type, title: base.title.trim() || categories[type === 'transfer' ? type : base.category].name,
+          amount, date: base.date, note: base.note, category: base.category, accountId: base.accountId };
         if (type === 'expense') {
           action.payments = multi ? available.filter(item => payAmounts[item.id]?.trim() && centsFromText(payAmounts[item.id]) !== 0)
             .map(item => ({ id: item.id, amount: centsFromText(payAmounts[item.id]) })) : [{ id: base.payer, amount }];
           action.method = isShared() ? method : 'equal';
           if (action.method !== 'none') action.specifications = isShared() ? specifications() : [{ id: who(), value: 1 }];
-        } else action.payer = base.payer;
+        } else if (type === 'income') action.payer = base.payer;
+        else Object.assign(action, { fromAccount: base.fromAccount, toAccount: base.toAccount, fee: centsFromText(base.fee || '0') });
         await submitAction(action);
-        if (page === 'overview' || (page === 'records' && !showDeleted)) month = action.date.slice(0, 7);
+        if (page === 'overview' || page === 'calendar' || (page === 'records' && !showDeleted)) month = action.date.slice(0, 7);
+        if (page === 'calendar') calendarDate = action.date;
         finish(record ? '账单已更新' : '账单已保存');
       });
     const form = modal.querySelector('form');
+    bindAmountKeypad(form);
+    form.querySelector('.record-options').open = Boolean(record || changed || base.note);
     form.addEventListener('input', () => { storeForm(new FormData(form)); preview(); });
     form.addEventListener('change', event => {
       storeForm(new FormData(form));
@@ -825,8 +953,10 @@ function exportCsv() {
   };
   const headers = ['日期', '类型', '摘要', '分类', '金额（元）', '付款 / 入账成员（元）', '分摊 / 收款成员（元）', '备注'];
   const rows = filteredRecords().map(item => {
-    const paymentInfo = item.type === 'expense' ? item.payments.map(({ id, amount }) => member(id).name + ' ' + decimal(amount)).join(' / ') : member(item.payer).name;
-    const splitInfo = item.type === 'expense' ? item.splits.map(({ id, amount }) => member(id).name + ' ' + decimal(amount)).join(' / ') : item.recipient ? member(item.recipient).name : '';
+    const paymentInfo = item.type === 'transfer' ? accountName(item.fromAccount) :
+      item.type === 'expense' ? item.payments.map(({ id, amount }) => member(id).name + ' ' + decimal(amount)).join(' / ') : member(item.payer).name;
+    const splitInfo = item.type === 'transfer' ? accountName(item.toAccount) :
+      item.type === 'expense' ? item.splits.map(({ id, amount }) => member(id).name + ' ' + decimal(amount)).join(' / ') : item.recipient ? member(item.recipient).name : '';
     return [item.date, typeLabels[item.type], item.title, categories[item.category].name, decimal(item.amount), paymentInfo, splitInfo, item.note];
   });
   if (!rows.length) return toast('当前没有可导出的账单。');
@@ -842,6 +972,7 @@ function exportCsv() {
 
 function changePage(next) {
   if (Object.hasOwn(pages, next)) page = next;
+  if (modal.open) modal.close();
   menu = '';
   render();
   window.scrollTo(0, 0);
@@ -864,14 +995,33 @@ const actions = {
   rename: renameDialog,
   'delete-ledger': deleteLedgerDialog,
   role: ({ id }) => roleDialog(id),
-  'calendar-day': ({ date }) => calendarDayDialog(date),
+  'calendar-day': ({ date }) => {
+    if (page !== 'calendar') return calendarDayDialog(date);
+    calendarDate = date;
+    render();
+    app.querySelector('[data-date="' + date + '"][data-action="calendar-day"]')?.focus({ preventScroll: true });
+  },
+  'analysis-mode': ({ type }) => {
+    analysisType = type;
+    render();
+    app.querySelector('[data-action="analysis-mode"][data-type="' + type + '"]')?.focus({ preventScroll: true });
+  },
+  accounts: accountsDialog,
+  'add-account': addAccountDialog,
+  tools: () => dialog('账本工具', ledger.state.name, '<div class="tools-list">' +
+    button('账户详情', 'accounts', 'wallet') + button('收支明细', 'page', 'list', 'outline', 'data-page="records"') +
+    (isShared() ? button('分摊结算', 'page', 'arrows', 'outline', 'data-page="settlements"') : '') +
+    button('账本成员', 'page', 'people', 'outline', 'data-page="members"') +
+    (canManage() ? button('预算设置', 'budget', 'target') : '') +
+    button('创建账本', 'create', 'plus') + button('加入账本', 'join', 'people') + button('我的账号', 'account', 'person') +
+    '</div>', button('关闭', 'close', '', 'outline')),
   'month-analysis': ({ type }) => monthlyAnalysis(type),
   details: ({ id }, target) => details(id, target.closest('[data-summary-type]')?.dataset.summaryType),
   edit: ({ id }) => recordDialog(ledger.state.records.find(item => item.id === id)),
   delete: ({ id }) => deleteDialog(id, false),
   restore: ({ id }) => deleteDialog(id, true),
   repay: ({ payer, recipient, amount }) => repayDialog(payer, recipient, Number(amount)),
-  new: () => recordDialog(),
+  new: ({ date }) => recordDialog(null, date ?? (page === 'calendar' ? calendarDate : dateKey())),
   close: () => modal.close(),
   'copy-link': () => copy('link'),
   'copy-code': () => copy('code'),
@@ -915,6 +1065,14 @@ document.addEventListener('keydown', event => {
 });
 
 function refreshRecords() { document.querySelector('#record-results').innerHTML = records(filteredRecords()); }
+app.addEventListener('submit', event => {
+  if (event.target.id !== 'overview-search') return;
+  event.preventDefault();
+  query = String(new FormData(event.target).get('search'));
+  showDeleted = false;
+  typeFilter = categoryFilter = 'all';
+  changePage('records');
+});
 app.addEventListener('input', event => {
   if (event.target.id === 'search') { query = event.target.value; refreshRecords(); }
 });

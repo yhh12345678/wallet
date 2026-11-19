@@ -8,7 +8,25 @@ export const categories = {
   contribution: { name: '成员缴费', icon: 'wallet', color: 'green' },
   income: { name: '其他收入', icon: 'arrow-down', color: 'green' },
   repayment: { name: '还款结算', icon: 'arrows', color: 'blue' },
+  transfer: { name: '账户转账', icon: 'arrows', color: 'blue' },
 };
+
+export const defaultAccount = { id: 'default', name: '默认账户', opening: 0 };
+
+export function ledgerAccounts(state) {
+  const accounts = [defaultAccount, ...(state.accounts ?? [])].map(account => ({ ...account, balance: account.opening }));
+  const lookup = new Map(accounts.map(account => [account.id, account]));
+  for (const item of state.records) {
+    if (item.deleted || item.type === 'repayment') continue;
+    if (item.type === 'transfer') {
+      lookup.get(item.fromAccount).balance -= item.amount + item.fee;
+      lookup.get(item.toAccount).balance += item.amount;
+    } else {
+      lookup.get(item.accountId ?? 'default').balance += item.type === 'income' ? item.amount : -item.amount;
+    }
+  }
+  return accounts;
+}
 
 export const expenseCategories = ['dining', 'groceries', 'transport', 'housing', 'fun', 'other'];
 export const incomeCategories = ['contribution', 'income'];
@@ -114,7 +132,7 @@ export function balances(records) {
   const result = Object.create(null);
   const add = (id, amount) => { result[id] = (result[id] ?? 0) + amount; };
   for (const record of records) {
-    if (record.deleted || record.type === 'income') continue;
+    if (record.deleted || record.type === 'income' || record.type === 'transfer') continue;
     if (record.type === 'repayment') {
       add(record.payer, record.amount);
       add(record.recipient, -record.amount);
@@ -176,6 +194,18 @@ export function mutate(state, action, members, actor, now = Date.now()) {
     return;
   }
 
+  if (action.kind === 'account') {
+    ensure(manager, '只有创建者或管理员可以添加账户。', 403);
+    const accounts = state.accounts ?? [];
+    const name = label(action.name, 30, '账户名称需要 1 至 30 个字符。');
+    ensure(accounts.length < 30, '此账本的账户数量已达上限。');
+    ensure(![defaultAccount, ...accounts].some(item => item.name === name), '账户名称已存在。');
+    ensure(Number.isSafeInteger(action.opening) && Math.abs(action.opening) <= maxCents, '请输入有效的期初余额。');
+    state.accounts = [...accounts, { id: crypto.randomUUID(), name, opening: action.opening }];
+    addAudit('添加了账户 · ' + name);
+    return;
+  }
+
   if (action.kind === 'delete' || action.kind === 'restore') {
     ensure(recordAllowed, '你没有权限修改这条记录。', 403);
     const deleting = action.kind === 'delete';
@@ -190,7 +220,7 @@ export function mutate(state, action, members, actor, now = Date.now()) {
   else ensure(state.records.length < maxRecords, '此账本已达到首版的记录上限。');
   ensure(amountValid(action.amount), '请输入有效金额，最多保留两位小数。');
   ensure(dateValid(action.date), '请选择有效日期。');
-  ensure(['expense', 'income', 'repayment'].includes(action.type), '请选择账单类型。');
+  ensure(['expense', 'income', 'repayment', 'transfer'].includes(action.type), '请选择账单类型。');
   ensure(!existing || action.type === existing.type, '编辑时请保留原账单类型。');
   const record = {
     id: existing?.id ?? crypto.randomUUID(),
@@ -203,7 +233,19 @@ export function mutate(state, action, members, actor, now = Date.now()) {
     type: action.type,
   };
 
-  if (action.type === 'expense') {
+  const accountIds = new Set(['default', ...(state.accounts ?? []).map(account => account.id)]);
+  if (action.type === 'expense' || action.type === 'income') {
+    const accountId = action.accountId ?? existing?.accountId ?? 'default';
+    ensure(accountIds.has(accountId), '请选择有效的账户。');
+    if (accountId !== 'default') record.accountId = accountId;
+  }
+
+  if (action.type === 'transfer') {
+    const { fromAccount, toAccount, fee = 0 } = action;
+    ensure(accountIds.has(fromAccount) && accountIds.has(toAccount) && fromAccount !== toAccount, '请选择两个不同的账户。');
+    ensure(fee === 0 || amountValid(fee), '请输入有效的手续费。');
+    Object.assign(record, { fromAccount, toAccount, fee, category: 'transfer' });
+  } else if (action.type === 'expense') {
     ensure(expenseCategories.includes(action.category), '请选择支出分类。');
     record.category = action.category;
     ensure(Array.isArray(action.payments) && action.payments.length > 0 && action.payments.length <= 60, '请填写付款人。');

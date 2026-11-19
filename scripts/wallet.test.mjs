@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { calendarDays } from '../public/calendar.js';
 import { registrationError, usernameEmail } from '../supabase/functions/_shared/credentials.js';
-import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../supabase/functions/_shared/model.js';
+import { allocate, balances, blankLedger, centsFromText, ledgerAccounts, mutate, suggestions, summarize } from '../supabase/functions/_shared/model.js';
 import { walletHandler } from '../supabase/functions/wallet/ledger.js';
 import { localDb } from './local-db.mjs';
 
@@ -226,4 +226,28 @@ test('创建者确认后可原子删除账本，撤销成员访问和邀请', as
   } finally {
     DB.close();
   }
+});
+
+test('账户期初余额、旧账单归集、转账手续费与收支统计隔离', () => {
+  const state = blankLedger('账户测试');
+  const members = [{ id: 'owner', role: 'owner', active: true }, { id: 'guest', role: 'viewer', active: true }];
+  const base = { kind: 'record', title: '测试流水', date: '2026-11-18', note: '' };
+  mutate(state, { ...base, type: 'income', category: 'income', payer: 'owner', amount: 9000 }, members, 'owner');
+  assert.deepEqual(ledgerAccounts(state).map(item => item.balance), [9000]);
+  assert.throws(() => mutate(state, { kind: 'account', name: '备用金', opening: 500 }, members, 'guest'), /权限/);
+  mutate(state, { kind: 'account', name: '备用金', opening: 500 }, members, 'owner');
+  const { id } = state.accounts[0];
+  const move = { ...base, type: 'transfer', fromAccount: 'default', toAccount: id, amount: 2000, fee: 30 };
+  assert.throws(() => mutate(state, { ...move, toAccount: 'default' }, members, 'owner'), /两个不同/);
+  mutate(state, move, members, 'owner');
+  const transfer = state.records[0].id;
+  mutate(state, { ...base, type: 'expense', accountId: id, category: 'dining', amount: 760, payments: [{ id: 'owner', amount: 760 }] }, members, 'owner');
+  assert.deepEqual(ledgerAccounts(state).map(item => item.balance), [6970, 1740]);
+  const stats = summarize(state, '2026-11');
+  assert.deepEqual([stats.income, stats.spending], [9000, 760]);
+  assert.deepEqual(suggestions(state.records), []);
+  mutate(state, { kind: 'delete', id: transfer }, members, 'owner');
+  assert.deepEqual(ledgerAccounts(state).map(item => item.balance), [9000, -260]);
+  mutate(state, { kind: 'restore', id: transfer }, members, 'owner');
+  assert.deepEqual(ledgerAccounts(state).map(item => item.balance), [6970, 1740]);
 });
