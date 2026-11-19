@@ -1,7 +1,7 @@
 import './build.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../public/model.js';
+import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../supabase/functions/_shared/model.js';
 import { localDb } from './local-db.mjs';
 
 const worker = (await import('../dist/server/index.js')).default;

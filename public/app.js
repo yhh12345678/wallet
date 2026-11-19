@@ -1,5 +1,6 @@
 import { allocate, balances, categories, centsFromText, dateKey, expenseCategories, incomeCategories, methods, monthShift, mutate, roles, suggestions, summarize } from './model.js';
 import { avatar, decimal, demoLedger, escape as e, icon, money, monthLabel, shortDate } from './ui.js';
+import { api as requestApi, emailAuth } from './backend.js';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -18,6 +19,7 @@ let showDeleted = false;
 let issue = '';
 let busy = false;
 let loadSequence = 0;
+let sessionVersion = 0;
 let invitation = '';
 const pages = {
   overview: ['账本总览', 'grid', '查看收支、预算和待结算款项。'],
@@ -229,6 +231,7 @@ function membersPage() {
 function render() {
   const [heading, , description] = pages[page];
   const signed = user?.name ?? '';
+  const accountLabel = emailAuth ? '邮箱账号' : 'ChatGPT 账号';
   const demoMode = ledger.id === 'demo';
   const title = page === 'overview' ? '账本总览' : heading;
   const upper = '<header class="top"><div class="breadcrumbs"><span>我的账本</span>' + icon('chevron', 13) + '<strong>' + e(ledger.state.name) + '</strong></div><div class="mobile-switch">' + switcher('mobile') +
@@ -237,23 +240,16 @@ function render() {
     (canWrite() ? button('记一笔', 'new', 'plus', 'primary') : '');
   const banner = issue ? '<div class="retry"><span>' + e(issue) + '</span>' + button('重试', 'retry', '', 'outline') + '</div>' : '';
   app.innerHTML = '<div class="shell"><aside class="side"><button class="brand" data-action="page" data-page="overview" aria-label="Wallet 账本总览"><span class="brand-mark"><svg aria-hidden="true" width="23" height="23" viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5 7.3 18l4.7-8.1 4.7 8.1 3.8-11.5" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><b>Wallet</b><small>共享记账</small></span></button>' +
-    '<div class="side-ledger">' + switcher('desktop') + '</div><div class="section-label">工作台</div><nav aria-label="主导航">' + nav() + '</nav><div class="side-foot">' + avatar(signed || member(who()).name, 0, 'avatar-lg') + '<div><strong>' + e(signed || member(who()).name) + '</strong><small>' + (signed ? 'ChatGPT 账号' : '示例账本') + '</small></div>' +
+    '<div class="side-ledger">' + switcher('desktop') + '</div><div class="section-label">工作台</div><nav aria-label="主导航">' + nav() + '</nav><div class="side-foot">' + avatar(signed || member(who()).name, 0, 'avatar-lg') + '<div><strong>' + e(signed || member(who()).name) + '</strong><small>' + (signed ? accountLabel : '示例账本') + '</small></div>' +
     iconButton('账本与登录', 'account', 'dots') + '</div></aside><div class="workspace">' + upper + '<main class="main">' + banner +
     '<div class="page-head"><div><div class="eyebrow">' + (isShared() ? '共享账本' : '个人账本') + '</div><h1>' + title + '</h1><p>' + description + '</p></div><div class="head-actions">' + actions + '</div></div>' +
     ({ overview, records: recordPage, settlements, analytics, members: membersPage }[page]()) + '</main></div><nav class="mobile-tabs" aria-label="移动导航">' + nav() + '</nav></div>';
 }
 
 async function api(path, data) {
-  const response = await fetch('/api/' + path, data === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  });
-  let result;
-  try { result = await response.json(); } catch { throw new Error('无法连接到账本服务。'); }
-  if (!response.ok) {
-    const error = new Error(result.error ?? '操作失败，请稍后重试。');
-    error.status = response.status;
-    throw error;
-  }
+  const version = sessionVersion;
+  const result = await requestApi(path, data);
+  if (version !== sessionVersion) throw new Error('登录状态已变化，请重新操作。');
   return result;
 }
 
@@ -266,10 +262,13 @@ function toast(message) {
 }
 
 async function listLedgers() {
-  if (user) ({ ledgers } = await api('ledgers'));
+  const account = user;
+  if (!account) return;
+  const result = await api('ledgers');
+  if (account === user) ledgers = result.ledgers;
 }
 
-async function selectLedger(id) {
+async function selectLedger(id, saveSelection = true) {
   const seq = ++loadSequence;
   const selected = id === 'demo' ? demo : await api('ledgers/' + id);
   if (seq !== loadSequence) return;
@@ -282,8 +281,16 @@ async function selectLedger(id) {
   typeFilter = 'all';
   categoryFilter = 'all';
   issue = '';
-  remember(id);
+  if (saveSelection) remember(id);
   render();
+}
+
+function clearSession() {
+  sessionVersion++;
+  user = null;
+  ledgers = [];
+  modal.close();
+  void selectLedger('demo', false);
 }
 
 async function refresh() {
@@ -298,6 +305,10 @@ async function refresh() {
       else document.querySelector('#record-results').innerHTML = records(filteredRecords());
     }
   } catch (error) {
+    if (emailAuth && ledger.id === id && error.status === 401) {
+      clearSession();
+      toast('登录状态已失效，请重新登录。');
+    }
     if (ledger.id === id && error.status === 404) {
       toast('你已无法访问该账本。');
       await listLedgers();
@@ -374,6 +385,22 @@ function submitFooter(text = '保存', alternate = '') {
 function finish(text) { modal.close(); render(); if (text) toast(text); }
 
 function loginDialog() {
+  if (emailAuth) {
+    dialog('登录 Wallet', '输入邮箱，获取登录验证码。',
+      field('电子邮箱', input('email', '', 'type="email" autocomplete="email" required maxlength="254" autofocus')),
+      submitFooter('发送验证码'), async data => {
+        const email = String(data.get('email')).trim();
+        await emailAuth.sendCode(email);
+        dialog('验证邮箱', '验证码已发送至 ' + email + '。',
+          field('邮箱验证码', input('code', '', 'inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" required autofocus')),
+          submitFooter('登录', button('更换邮箱', 'login', '', 'outline')), async verification => {
+            await emailAuth.verifyCode(email, String(verification.get('code')));
+            modal.close();
+            await initialize();
+          });
+      });
+    return;
+  }
   const target = invitation ? '/?invite=' + encodeURIComponent(invitation) : '/';
   dialog('登录 Wallet', '使用 ChatGPT 账号创建、加入和同步账本。', '<a class="btn primary" target="_top" href="/signin-with-chatgpt?return_to=' +
     encodeURIComponent(target) + '">使用 ChatGPT 登录</a>', button('继续体验示例', 'close', '', 'outline'));
@@ -406,7 +433,14 @@ function joinDialog() {
       } catch { /* Raw code is also accepted. */ }
       const { id } = await api('join', { code, displayName: data.get('displayName') });
       invitation = '';
-      history.replaceState({}, '', location.pathname + location.search.split('?invite=')[0]);
+      const url = new URL(location.href);
+      const fragment = new URLSearchParams(url.hash.slice(1));
+      if (fragment.has('invite')) {
+        fragment.delete('invite');
+        url.hash = fragment.toString();
+      }
+      url.searchParams.delete('invite');
+      history.replaceState({}, '', url);
       await listLedgers();
       await selectLedger(id);
       finish('已加入共享账本');
@@ -420,7 +454,7 @@ function inviteDialog() {
     return;
   }
   dialog('邀请成员', '邀请码有效期为 7 天。重新生成或撤销会让旧邀请码失效。',
-    '<p class="small muted">受邀成员可以使用邀请码加入账本。如果站点采用私有访问，还需要先获准访问 Wallet。</p>',
+    '<p class="small muted">受邀成员登录 Wallet 后，即可使用邀请码加入账本。' + (emailAuth ? '' : '如果站点采用私有访问，还需要先获准访问 Wallet。') + '</p>',
     button('关闭', 'close', '', 'outline') + '<button type="submit" class="btn danger" value="revoke">撤销现有邀请</button><button type="submit" class="btn primary">生成邀请链接</button>',
     async (_data, action) => {
       const result = await api('ledgers/' + ledger.id + '/invite', { revoke: action === 'revoke' });
@@ -685,6 +719,7 @@ const actions = {
   },
   switch: async ({ id }) => { try { await selectLedger(id); } catch (error) { toast(error.message); } },
   create: createDialog,
+  login: loginDialog,
   join: joinDialog,
   invite: inviteDialog,
   budget: budgetDialog,
@@ -705,6 +740,10 @@ const actions = {
   month: ({ delta }) => { month = monthShift(month, Number(delta)); render(); },
   account: () => {
     if (!user) return loginDialog();
+    if (emailAuth) {
+      return dialog('我的账号', user.name, '<p class="small muted">登录后可跨设备查看云端账本。</p>',
+        submitFooter('退出登录'), async () => { await emailAuth.signOut(); if (user) clearSession(); });
+    }
     dialog('我的账号', user.name, '<p class="small muted">使用共享账本可以在登录后跨设备查看记录。</p>', button('关闭', 'close', '', 'outline') +
       '<a class="btn outline" href="/signout-with-chatgpt?return_to=%2F" target="_top">退出登录</a>');
   },
@@ -741,6 +780,10 @@ app.addEventListener('change', event => {
 async function initialize() {
   try {
     ({ user } = await api('session'));
+    if (!user) {
+      ledgers = [];
+      if (ledger.id !== 'demo') await selectLedger('demo', false);
+    }
     await listLedgers();
     issue = '';
     const last = storedLedger();
@@ -757,6 +800,7 @@ async function initialize() {
 }
 
 render();
+emailAuth?.onSignOut(clearSession);
 void initialize();
 setInterval(() => { void refresh().catch(() => {}); }, 5000);
 window.addEventListener('focus', () => { void refresh().catch(() => {}); });

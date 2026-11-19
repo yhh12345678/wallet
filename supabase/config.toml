@@ -1,0 +1,18 @@
+project_id = "wallet"
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+
+[auth.email.template.confirmation]
+subject = "Wallet 邮箱验证码"
+content_path = "./supabase/templates/email-code.html"
+
+[auth.email.template.magic_link]
+subject = "Wallet 邮箱验证码"
+content_path = "./supabase/templates/email-code.html"
+
+[functions.wallet]
+# The function verifies bearer tokens with Supabase Auth, including asymmetric signing keys.
+verify_jwt = false
+entrypoint = "./functions/wallet/index.js"

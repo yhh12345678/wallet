@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const type = { html: 'text/html', css: 'text/css', js: 'text/javascript' };
-const assets = {};
+const model = await readFile(resolve(root, 'supabase/functions/_shared/model.js'), 'utf8');
+const assets = { '/model.js': { type: 'text/javascript; charset=utf-8', body: model } };
 for (const filename of await readdir(resolve(root, 'public'))) {
   const ext = filename.split('.').at(-1);
   if (!Object.hasOwn(type, ext)) continue;
@@ -15,6 +16,5 @@ for (const filename of await readdir(resolve(root, 'public'))) {
 const output = resolve(root, 'dist/server');
 await mkdir(output, { recursive: true });
 const server = await readFile(resolve(root, 'server/index.js'), 'utf8');
-const model = await readFile(resolve(root, 'public/model.js'), 'utf8');
 const source = model + '\nconst assets = ' + JSON.stringify(assets) + ';\n' + server.replace(/^import .*;\n/gm, '');
 await writeFile(resolve(output, 'index.js'), source);
