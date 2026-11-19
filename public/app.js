@@ -140,6 +140,25 @@ function chart() {
   return panel('收支趋势', '最近 6 个月', '<div class="chart" role="img" aria-label="' + e(text) + '"><div class="axis">' + labels + '</div><div class="plot">' + columns + '</div><div class="axis-months">' + monthsLine + '</div></div>', legend);
 }
 
+function accountTrend() {
+  const months = Array.from({ length: 6 }, (_, index) => monthShift(month, index - 5));
+  const values = months.map(key => ledgerAccounts({
+    ...ledger.state, records: ledger.state.records.filter(item => item.date.slice(0, 7) <= key),
+  }).reduce((total, account) => total + account.balance, 0));
+  const low = Math.min(0, ...values);
+  const high = Math.max(low + 1, ...values);
+  const points = values.map((value, index) => [320 * (index + 0.5) / 6, 95 - (value - low) / (high - low) * 82]);
+  const label = months.map((key, index) => monthLabel(key) + ' ' + signedMoney(values[index])).join('，');
+  const graph = '<svg class="account-trend" viewBox="0 0 320 105" preserveAspectRatio="none" role="img" aria-label="' + e(label) +
+    '"><path d="M10 13H310 M10 54H310 M10 95H310" fill="none" stroke="var(--line)"/><polyline points="' +
+    points.map(point => point.join(',')).join(' ') + '" fill="none" stroke="var(--primary)" stroke-width="2.5"/>' +
+    points.map(([x, y], index) => '<circle cx="' + x + '" cy="' + y + '" r="3.5" fill="var(--primary)"><title>' +
+      e(monthLabel(months[index]) + ' ' + signedMoney(values[index])) + '</title></circle>').join('') + '</svg>';
+  const monthsLine = '<div class="account-trend-months">' + months.map(key => '<span>' + Number(key.slice(5)) + '月</span>').join('') + '</div>';
+  return panel('账户净额走势', '最近 6 个月 · 按期初余额回算', graph + monthsLine,
+    button('账户详情', 'accounts', 'chevron', 'text'));
+}
+
 function calendarAmount(cents, type, sign) {
   if (!cents) return '';
   const narrow = cents >= 1000000 ? compactCalendarMoney.format(cents / 100) : String(cents / 100);
@@ -240,7 +259,7 @@ function overview() {
     metric('本月支出', money(stats.spending), spendFoot, 'upRight', 'violet', { leading: true, type: 'expense' }) +
     metric('本月收入', money(stats.income), stats.records.filter(item => item.type === 'income').length + ' 笔入账', 'downLeft', 'green', { type: 'income' }) +
     metric('账户净额', signedMoney(totalAssets), '账本内所有账户', 'wallet', 'blue', { type: 'accounts' }) + '</div>' +
-    '<div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar() +
+    '<div class="dashboard-row">' + accountTrend() + budget(stats) + '</div>' + dailyCalendar() +
     '<div class="dashboard-row">' + panel('最近账单', '', records(sortRecords(stats.records).slice(0, 4)), button('查看明细', 'page', 'chevron', 'text', 'data-page="records"'), 'table-panel') +
     (isShared() ? panel('待结算款项', debt.length ? debt.length + ' 笔建议转账' : '按全部历史账单计算', settlementList(debt.slice(0, 3), true), button('查看', 'page', 'chevron', 'text', 'data-page="settlements"')) : panel('支出构成', monthLabel(month), breakdown(stats))) + '</div>';
 }
