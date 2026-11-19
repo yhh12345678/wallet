@@ -1,6 +1,7 @@
 import { allocate, balances, categories, centsFromText, dateKey, expenseCategories, incomeCategories, methods, monthShift, mutate, roles, suggestions, summarize } from './model.js';
 import { avatar, decimal, demoLedger, escape as e, icon, money, monthLabel, shortDate } from './ui.js';
 import { api as requestApi, accountAuth } from './backend.js';
+import { calendarDays } from './calendar.js';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -29,6 +30,8 @@ const pages = {
   members: ['账本成员', 'people', '管理共享账本的成员、角色与操作记录。'],
 };
 const typeLabels = { expense: '支出', income: '收入', repayment: '还款' };
+const compactCalendarMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 });
+const sharePercent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 });
 
 function loadDemo() {
   try {
@@ -103,8 +106,14 @@ function panel(title, description, body, trailing = '', extra = '') {
   return '<section class="card panel ' + extra + '"><header class="panel-head"><div><h2>' + title + '</h2>' + (description ? '<p>' + description + '</p>' : '') + '</div>' + trailing + '</header>' + body + '</section>';
 }
 
-function metric(title, value, detail, symbol, color, leading = false) {
-  return '<section class="card metric' + (leading ? ' leading' : '') + '"><div class="metric-top"><span>' + title + '</span><span class="metric-icon ' + color + '">' + icon(symbol, 17) + '</span></div><div class="metric-value num">' + value + '</div><div class="metric-foot">' + detail + '</div></section>';
+function metric(title, value, detail, symbol, color, { leading = false, type = '' } = {}) {
+  const tag = type ? 'button' : 'section';
+  const action = type ? ' type="button" data-action="month-analysis" data-type="' + type + '" aria-haspopup="dialog"' : '';
+  const hint = type ? '<span class="metric-hint">查看分析</span>' : '';
+  return '<' + tag + ' class="card metric' + (leading ? ' leading' : '') + (type ? ' metric-interactive' : '') + '"' + action +
+    '><span class="metric-top"><span>' + title + '</span><span class="metric-icon ' + color + '">' + icon(symbol, 17) +
+    '</span></span><span class="metric-value num">' + value + '</span><span class="metric-foot"><span>' + detail +
+    '</span>' + hint + '</span></' + tag + '>';
 }
 
 function chart() {
@@ -121,6 +130,45 @@ function chart() {
   const legend = '<div class="legend"><span><i class="light"></i>收入</span><span><i></i>支出</span></div>';
   const text = summaries.map((item, i) => monthLabel(months[i]) + '收入 ' + money(item.income) + '，支出 ' + money(item.spending)).join('。');
   return panel('收支趋势', '最近 6 个月', '<div class="chart" role="img" aria-label="' + e(text) + '"><div class="axis">' + labels + '</div><div class="plot">' + columns + '</div><div class="axis-months">' + monthsLine + '</div></div>', legend);
+}
+
+function calendarAmount(cents, type, sign) {
+  if (!cents) return '';
+  const narrow = cents >= 1000000 ? compactCalendarMoney.format(cents / 100) : String(cents / 100);
+  return '<span class="calendar-amount ' + type + '"><span class="calendar-full">' + sign + money(cents) +
+    '</span><span class="calendar-compact">' + sign + narrow + '</span></span>';
+}
+
+function dailyCalendar() {
+  const { offset, days } = calendarDays(ledger.state.records, month);
+  const today = dateKey();
+  const weekdays = Array.from('一二三四五六日', day => '<span>周' + day + '</span>').join('');
+  const blank = '<span class="calendar-blank"></span>';
+  const cells = days.map(({ date, income, spending, records: items }) => {
+    const label = shortDate(date) + '，收入 ' + money(income) + '，支出 ' + money(spending) + '，' + items.length + ' 笔账单';
+    const amounts = calendarAmount(income, 'income', '+') + calendarAmount(spending, 'expense', '−');
+    const content = amounts || '<span class="calendar-idle">' + (items.length ? '还款' : '—') + '</span>';
+    return '<button type="button" class="calendar-day' + (items.length ? ' has-records' : '') +
+      '" data-action="calendar-day" data-date="' + e(date) + '" aria-haspopup="dialog" aria-label="' + e(label) +
+      '"' + (date === today ? ' aria-current="date"' : '') + ' title="' + e(label) + '">' +
+      '<span class="calendar-number">' + Number(date.slice(8)) + '</span><span class="calendar-amounts" aria-hidden="true">' +
+      content + '</span></button>';
+  }).join('');
+  const trailing = (7 - (offset + days.length) % 7) % 7;
+  const legend = '<div class="calendar-legend"><span class="income">＋ 收入</span><span class="expense">− 支出</span></div>';
+  const body = '<div class="calendar-weekdays" aria-hidden="true">' + weekdays + '</div>' +
+    '<div class="calendar-grid">' + blank.repeat(offset) + cells + blank.repeat(trailing) + '</div>' + legend;
+  return panel('收支日历', '点击日期查看当天账单', body, '<div class="calendar-month">' + monthControl() + '</div>', 'calendar-panel');
+}
+
+function calendarDayDialog(date) {
+  const day = calendarDays(ledger.state.records, month).days[Number(date.slice(8)) - 1];
+  if (day?.date !== date) return;
+  const { income, spending, records: items } = day;
+  const totals = '<div class="calendar-totals"><div><span>收入</span><strong class="num income">' + money(income) +
+    '</strong></div><div><span>支出</span><strong class="num expense">' + money(spending) + '</strong></div></div>';
+  dialog(shortDate(date) + '收支', date.slice(0, 4) + ' 年 · ' + items.length + ' 笔账单',
+    totals + (items.length ? records(sortRecords(items)) : empty('当天暂无账单', 'calendar')), button('关闭', 'close', '', 'outline'));
 }
 
 function budget(stats) {
@@ -164,10 +212,10 @@ function overview() {
   const spendFoot = percent === null ? stats.records.filter(item => item.type === 'expense').length + ' 笔支出' : '较上月 <b>' + (percent > 0 ? '+' : '') + percent + '%</b>';
   const debt = suggestions(ledger.state.records);
   return '<div class="toolbar">' + monthControl() + memberStrip() + '</div><div class="cards">' +
-    metric('本月支出', money(stats.spending), spendFoot, 'upRight', 'violet', true) +
-    metric('本月收入', money(stats.income), stats.records.filter(item => item.type === 'income').length + ' 笔入账', 'downLeft', 'green') +
+    metric('本月支出', money(stats.spending), spendFoot, 'upRight', 'violet', { leading: true, type: 'expense' }) +
+    metric('本月收入', money(stats.income), stats.records.filter(item => item.type === 'income').length + ' 笔入账', 'downLeft', 'green', { type: 'income' }) +
     metric('剩余预算', stats.budget ? signedMoney(stats.remaining) : '—', stats.budget ? '总预算 ' + money(stats.budget) : '预算待设置', 'wallet', 'blue') + '</div>' +
-    '<div class="dashboard-row">' + chart() + budget(stats) + '</div>' +
+    '<div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar() +
     '<div class="dashboard-row">' + panel('最近账单', '', records(sortRecords(stats.records).slice(0, 4)), button('查看明细', 'page', 'chevron', 'text', 'data-page="records"'), 'table-panel') +
     (isShared() ? panel('待结算款项', debt.length ? debt.length + ' 笔建议转账' : '按全部历史账单计算', settlementList(debt.slice(0, 3), true), button('查看', 'page', 'chevron', 'text', 'data-page="settlements"')) : panel('支出构成', monthLabel(month), breakdown(stats))) + '</div>';
 }
@@ -190,16 +238,51 @@ function recordPage() {
       '<select id="filter-type" aria-label="按账单类型筛选">' + options([['all', '全部类型'], ...Object.entries(typeLabels)], typeFilter) + '</select><select id="filter-category" aria-label="按分类筛选">' + options([['all', '全部分类'], ...Object.entries(categories).map(([key, category]) => [key, category.name])], categoryFilter) + '</select></div><div id="record-results">' + records(filteredRecords()) + '</div>');
 }
 
+function categoryBreakdown(byCategory, total, showShare = false) {
+  return '<div class="category-breakdown">' + Object.entries(byCategory).filter(([, amount]) => amount > 0)
+    .sort((a, b) => b[1] - a[1]).map(([key, amount]) => {
+      const share = amount / total;
+      const shareLabel = showShare ? '<small>' + e(share < .001 ? '<0.1%' : sharePercent.format(share)) + '</small>' : '';
+      return '<div class="break-row"><span class="break-label">' + categoryIcon(key) + categories[key].name +
+        '</span><div class="track" aria-hidden="true"><i style="--fill:' + (share * 100) + '%"></i></div>' +
+        '<span class="break-amount"><strong class="num">' + money(amount) + '</strong>' + shareLabel + '</span></div>';
+    }).join('') + '</div>';
+}
+
 function breakdown(stats) {
-  if (!stats.spending) return empty('本月暂无支出', 'chart');
-  return '<div class="category-breakdown">' + Object.entries(stats.byCategory).filter(([, total]) => total > 0).sort((a, b) => b[1] - a[1]).map(([key, total]) =>
-    '<div class="break-row"><span class="break-label">' + categoryIcon(key) + categories[key].name + '</span><div class="track"><i style="--fill:' + (total / stats.spending * 100) + '%"></i></div><strong class="num">' + money(total) + '</strong></div>',
-  ).join('') + '</div>';
+  return stats.spending ? categoryBreakdown(stats.byCategory, stats.spending) : empty('本月暂无支出', 'chart');
+}
+
+function monthlyAnalysis(type) {
+  if (type !== 'income' && type !== 'expense') return;
+  const stats = summarize(ledger.state, month);
+  const items = sortRecords(stats.records.filter(item => item.type === type));
+  const total = type === 'income' ? stats.income : stats.spending;
+  const label = typeLabels[type];
+  const totals = Object.create(null);
+  let largest = 0;
+  for (const item of items) {
+    totals[item.category] = (totals[item.category] ?? 0) + item.amount;
+    largest = Math.max(largest, item.amount);
+  }
+  const metrics = [
+    [label + '总额', money(total)], ['账单笔数', items.length + ' 笔'],
+    ['平均每笔', items.length ? money(Math.round(total / items.length)) : '—'],
+    ['最大单笔', items.length ? money(largest) : '—'],
+  ];
+  const tiles = '<dl class="analysis-metrics">' + metrics.map(([name, value]) =>
+    '<div><dt>' + name + '</dt><dd class="num">' + value + '</dd></div>').join('') + '</dl>';
+  const content = items.length ?
+    '<section class="analysis-section"><h3>分类占比</h3>' + categoryBreakdown(totals, total, true) + '</section>' +
+    '<section class="analysis-section" data-summary-type="' + type + '"><h3>' + label + '明细</h3>' + records(items) + '</section>' :
+    empty('该月暂无' + label, 'chart');
+  dialog(label + '分析', monthLabel(month) + ' · ' + ledger.state.name, '<div class="monthly-analysis ' + type + '">' + tiles + content +
+    '</div>', button('关闭', 'close', '', 'outline'));
 }
 
 function analytics() {
   const stats = summarize(ledger.state, month);
-  return '<div class="toolbar">' + monthControl() + '</div><div class="dashboard-row">' + chart() + budget(stats) + '</div>' +
+  return '<div class="toolbar">' + monthControl() + '</div><div class="dashboard-row">' + chart() + budget(stats) + '</div>' + dailyCalendar() +
     panel('分类支出', monthLabel(month), breakdown(stats));
 }
 
@@ -519,7 +602,7 @@ function roleDialog(id) {
     });
 }
 
-function details(id) {
+function details(id, analysisType) {
   const record = ledger.state.records.find(item => item.id === id);
   if (!record) return;
   const allowed = canWrite() && (canManage() || record.author === who());
@@ -543,7 +626,9 @@ function details(id) {
   const data = 'data-id="' + e(id) + '"';
   const actions = record.deleted ? button('恢复账单', 'restore', 'history', 'primary', data) :
     button('删除账单', 'delete', '', 'danger', data) + (record.type === 'repayment' ? '' : button('编辑账单', 'edit', 'edit', 'primary', data));
-  dialog(record.title, record.deleted ? '该账单在回收站中。' : '', body, button('关闭', 'close', '', 'outline') + (allowed ? actions : ''));
+  const back = analysisType ? button('返回分析', 'month-analysis', 'left', 'outline', 'data-type="' + e(analysisType) + '"') :
+    button('关闭', 'close', '', 'outline');
+  dialog(record.title, record.deleted ? '该账单在回收站中。' : '', body, back + (allowed ? actions : ''));
 }
 
 function deleteDialog(id, restoring) {
@@ -741,7 +826,9 @@ const actions = {
   budget: budgetDialog,
   rename: renameDialog,
   role: ({ id }) => roleDialog(id),
-  details: ({ id }) => details(id),
+  'calendar-day': ({ date }) => calendarDayDialog(date),
+  'month-analysis': ({ type }) => monthlyAnalysis(type),
+  details: ({ id }, target) => details(id, target.closest('[data-summary-type]')?.dataset.summaryType),
   edit: ({ id }) => recordDialog(ledger.state.records.find(item => item.id === id)),
   delete: ({ id }) => deleteDialog(id, false),
   restore: ({ id }) => deleteDialog(id, true),
@@ -753,7 +840,12 @@ const actions = {
   export: exportCsv,
   retry: () => initialize(),
   trash: () => { showDeleted = !showDeleted; query = ''; typeFilter = 'all'; categoryFilter = 'all'; render(); },
-  month: ({ delta }) => { month = monthShift(month, Number(delta)); render(); },
+  month: ({ delta }, target) => {
+    const section = target.closest('.calendar-month') ? '.calendar-month' : '.toolbar';
+    month = monthShift(month, Number(delta));
+    render();
+    app.querySelector(section + ' [data-delta="' + delta + '"]')?.focus({ preventScroll: true });
+  },
   account: () => {
     if (!user) return loginDialog();
     if (accountAuth) {
@@ -775,7 +867,7 @@ document.addEventListener('click', event => {
   const target = event.target.closest('[data-action]');
   if (target) {
     const command = actions[target.dataset.action];
-    if (command && !busy) command(target.dataset);
+    if (command && !busy) command(target.dataset, target);
     return;
   }
   if (menu && !event.target.closest('.ledger-popup') && !modal.open) { menu = ''; render(); }

@@ -1,12 +1,35 @@
 import './build.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { calendarDays } from '../public/calendar.js';
 import { registrationError, usernameEmail } from '../supabase/functions/_shared/credentials.js';
 import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../supabase/functions/_shared/model.js';
 import { walletHandler } from '../supabase/functions/wallet/ledger.js';
 import { localDb } from './local-db.mjs';
 
 const worker = (await import('../dist/server/index.js')).default;
+
+test('月历按日期汇总收支，正确处理闰年、空白日期、回收站和还款', () => {
+  const items = [
+    { date: '2024-02-01', type: 'income', amount: 3000 },
+    { date: '2024-02-01', type: 'income', amount: 502 },
+    { date: '2024-02-01', type: 'income', amount: 9999, deleted: true },
+    { date: '2024-02-01', type: 'expense', amount: 1001 },
+    { date: '2024-02-01', type: 'repayment', amount: 1000 },
+    { date: '2024-02-29', type: 'expense', amount: 165 },
+    { date: '2024-03-01', type: 'expense', amount: 3000 },
+  ];
+  const { offset, days } = calendarDays(items, '2024-02');
+  assert.equal(offset, 3);
+  assert.equal(days.length, 29);
+  assert.deepEqual(days[0], {
+    date: '2024-02-01', income: 3502, spending: 1001, records: [items[0], items[1], items[3], items[4]],
+  });
+  assert.deepEqual(days[1], { date: '2024-02-02', income: 0, spending: 0, records: [] });
+  assert.equal(days.at(-1).spending, 165);
+  assert.equal(calendarDays(items, '2024-03').days[0].spending, 3000);
+  assert.equal(calendarDays([], '2025-02').days.length, 28);
+});
 
 test('用户名密码注册允许站内访客，账本仍需登录', async () => {
   const origin = 'https://wallet.example';
