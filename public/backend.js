@@ -1,4 +1,4 @@
-export const emailAuth = null;
+export const accountAuth = null;
 
 export async function api(path, data) {
   const response = await fetch('/api/' + path, data === undefined ? {} : {

@@ -118,7 +118,7 @@ async function writeLedger(db, id, endpoint, data, user) {
   });
 }
 
-export function walletHandler(db, authenticate, origins) {
+export function walletHandler(db, authenticate, origins, register) {
   return async request => {
     const origin = request.headers.get('origin');
     const headers = new Headers({ 'Cache-Control': 'no-store', Vary: 'Origin' });
@@ -132,10 +132,14 @@ export function walletHandler(db, authenticate, origins) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
 
     try {
-      const user = await authenticate(request);
-      if (!user) throw new WalletError('请先登录 Wallet。', 401);
       const path = new URL(request.url).pathname.replace(/^(?:\/functions\/v1)?\/wallet(?=\/|$)/, '');
       const { method } = request;
+      if (path === '/register' && method === 'POST') {
+        if (!origin) throw new WalletError('请在 Wallet 页面内完成操作。', 403);
+        return json(await register(await payload(request), request), 201);
+      }
+      const user = await authenticate(request);
+      if (!user) throw new WalletError('请先登录 Wallet。', 401);
       if (path === '/session' && method === 'GET') return json({ user });
       if (path === '/ledgers' && method === 'GET') {
         const ledgers = await db`select l.id, l.document->>'name' as name, l.document->>'kind' as kind, m.role

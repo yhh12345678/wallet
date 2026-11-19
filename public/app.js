@@ -1,6 +1,6 @@
 import { allocate, balances, categories, centsFromText, dateKey, expenseCategories, incomeCategories, methods, monthShift, mutate, roles, suggestions, summarize } from './model.js';
 import { avatar, decimal, demoLedger, escape as e, icon, money, monthLabel, shortDate } from './ui.js';
-import { api as requestApi, emailAuth } from './backend.js';
+import { api as requestApi, accountAuth } from './backend.js';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -231,7 +231,7 @@ function membersPage() {
 function render() {
   const [heading, , description] = pages[page];
   const signed = user?.name ?? '';
-  const accountLabel = emailAuth ? '邮箱账号' : 'ChatGPT 账号';
+  const accountLabel = accountAuth ? 'Wallet 账号' : 'ChatGPT 账号';
   const demoMode = ledger.id === 'demo';
   const title = page === 'overview' ? '账本总览' : heading;
   const upper = '<header class="top"><div class="breadcrumbs"><span>我的账本</span>' + icon('chevron', 13) + '<strong>' + e(ledger.state.name) + '</strong></div><div class="mobile-switch">' + switcher('mobile') +
@@ -305,7 +305,7 @@ async function refresh() {
       else document.querySelector('#record-results').innerHTML = records(filteredRecords());
     }
   } catch (error) {
-    if (emailAuth && ledger.id === id && error.status === 401) {
+    if (accountAuth && ledger.id === id && error.status === 401) {
       clearSession();
       toast('登录状态已失效，请重新登录。');
     }
@@ -384,23 +384,38 @@ function submitFooter(text = '保存', alternate = '') {
 }
 function finish(text) { modal.close(); render(); if (text) toast(text); }
 
+function passwordDialog(register, savedUsername = '') {
+  const title = register ? '注册 Wallet' : '登录 Wallet';
+  const description = register ? '密码需为 8–32 位，以字母或数字开头，并包含大写、小写、数字或符号中的至少三类。' : '';
+  const passwordAttributes = register ? 'autocomplete="new-password" minlength="8"' : 'autocomplete="current-password"';
+  const fields = field('用户名', input('username', savedUsername,
+    'autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="24" required autofocus')) +
+    field('密码', input('password', '', 'type="password" maxlength="32" required ' + passwordAttributes)) +
+    (register ? field('确认密码', input('confirmation', '',
+      'type="password" autocomplete="new-password" maxlength="32" required')) : '');
+  const alternate = register ? button('返回登录', 'login', '', 'outline') : button('注册账号', 'register', '', 'outline');
+  dialog(title, description, fields, submitFooter(register ? '注册' : '登录', alternate), async data => {
+    const username = String(data.get('username')).trim();
+    const password = String(data.get('password'));
+    if (register) {
+      if (password !== data.get('confirmation')) throw new Error('两次输入的密码不一致。');
+      await accountAuth.register(username, password);
+    }
+    try {
+      await accountAuth.signIn(username, password);
+    } catch (error) {
+      if (!register) throw error;
+      passwordDialog(false, username);
+      toast('账号已创建，请输入密码登录。');
+      return;
+    }
+    modal.close();
+    await initialize();
+  });
+}
+
 function loginDialog() {
-  if (emailAuth) {
-    dialog('登录 Wallet', '输入邮箱，获取登录验证码。',
-      field('电子邮箱', input('email', '', 'type="email" autocomplete="email" required maxlength="254" autofocus')),
-      submitFooter('发送验证码'), async data => {
-        const email = String(data.get('email')).trim();
-        await emailAuth.sendCode(email);
-        dialog('验证邮箱', '验证码已发送至 ' + email + '。',
-          field('邮箱验证码', input('code', '', 'inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" required autofocus')),
-          submitFooter('登录', button('更换邮箱', 'login', '', 'outline')), async verification => {
-            await emailAuth.verifyCode(email, String(verification.get('code')));
-            modal.close();
-            await initialize();
-          });
-      });
-    return;
-  }
+  if (accountAuth) return passwordDialog(false);
   const target = invitation ? '/?invite=' + encodeURIComponent(invitation) : '/';
   dialog('登录 Wallet', '使用 ChatGPT 账号创建、加入和同步账本。', '<a class="btn primary" target="_top" href="/signin-with-chatgpt?return_to=' +
     encodeURIComponent(target) + '">使用 ChatGPT 登录</a>', button('继续体验示例', 'close', '', 'outline'));
@@ -454,7 +469,7 @@ function inviteDialog() {
     return;
   }
   dialog('邀请成员', '邀请码有效期为 7 天。重新生成或撤销会让旧邀请码失效。',
-    '<p class="small muted">受邀成员登录 Wallet 后，即可使用邀请码加入账本。' + (emailAuth ? '' : '如果站点采用私有访问，还需要先获准访问 Wallet。') + '</p>',
+    '<p class="small muted">受邀成员登录 Wallet 后，即可使用邀请码加入账本。' + (accountAuth ? '' : '如果站点采用私有访问，还需要先获准访问 Wallet。') + '</p>',
     button('关闭', 'close', '', 'outline') + '<button type="submit" class="btn danger" value="revoke">撤销现有邀请</button><button type="submit" class="btn primary">生成邀请链接</button>',
     async (_data, action) => {
       const result = await api('ledgers/' + ledger.id + '/invite', { revoke: action === 'revoke' });
@@ -720,6 +735,7 @@ const actions = {
   switch: async ({ id }) => { try { await selectLedger(id); } catch (error) { toast(error.message); } },
   create: createDialog,
   login: loginDialog,
+  register: () => { if (accountAuth) passwordDialog(true); },
   join: joinDialog,
   invite: inviteDialog,
   budget: budgetDialog,
@@ -740,9 +756,9 @@ const actions = {
   month: ({ delta }) => { month = monthShift(month, Number(delta)); render(); },
   account: () => {
     if (!user) return loginDialog();
-    if (emailAuth) {
+    if (accountAuth) {
       return dialog('我的账号', user.name, '<p class="small muted">登录后可跨设备查看云端账本。</p>',
-        submitFooter('退出登录'), async () => { await emailAuth.signOut(); if (user) clearSession(); });
+        submitFooter('退出登录'), async () => { await accountAuth.signOut(); if (user) clearSession(); });
     }
     dialog('我的账号', user.name, '<p class="small muted">使用共享账本可以在登录后跨设备查看记录。</p>', button('关闭', 'close', '', 'outline') +
       '<a class="btn outline" href="/signout-with-chatgpt?return_to=%2F" target="_top">退出登录</a>');
@@ -800,7 +816,7 @@ async function initialize() {
 }
 
 render();
-emailAuth?.onSignOut(clearSession);
+accountAuth?.onSignOut(clearSession);
 void initialize();
 setInterval(() => { void refresh().catch(() => {}); }, 5000);
 window.addEventListener('focus', () => { void refresh().catch(() => {}); });

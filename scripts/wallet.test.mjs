@@ -1,10 +1,36 @@
 import './build.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { registrationError, usernameEmail } from '../supabase/functions/_shared/credentials.js';
 import { allocate, balances, blankLedger, centsFromText, mutate, suggestions, summarize } from '../supabase/functions/_shared/model.js';
+import { walletHandler } from '../supabase/functions/wallet/ledger.js';
 import { localDb } from './local-db.mjs';
 
 const worker = (await import('../dist/server/index.js')).default;
+
+test('用户名密码注册允许站内访客，账本仍需登录', async () => {
+  const origin = 'https://wallet.example';
+  const credentials = { username: 'Wallet_01', password: 'Bookkeeper42!' };
+  assert.equal(usernameEmail(credentials.username), 'wallet_01@accounts.wallet.invalid');
+  assert.equal(registrationError(credentials.username, credentials.password), '');
+  assert.ok(registrationError('用户1', credentials.password));
+  assert.ok(registrationError(credentials.username, 'weakpass'));
+
+  let registered = 0;
+  const handler = walletHandler(null, async () => null, new Set([origin]), async data => {
+    assert.deepEqual(data, credentials);
+    registered++;
+    return { username: data.username };
+  });
+  const register = headers => handler(new Request(origin + '/functions/v1/wallet/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(credentials),
+  }));
+  assert.equal((await register({})).status, 403);
+  assert.equal((await register({ Origin: 'https://other.example' })).status, 403);
+  assert.equal((await register({ Origin: origin })).status, 201);
+  assert.equal((await handler(new Request(origin + '/functions/v1/wallet/ledgers', { headers: { Origin: origin } }))).status, 401);
+  assert.equal(registered, 1);
+});
 
 test('分摊尾差、指定金额、比例和份数均保持整数分总额', () => {
   assert.equal(centsFromText('12.05'), 1205);
